@@ -21,6 +21,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/hlo_module.h"
 #include "tensorflow/compiler/xla/service/hlo_opcode.h"
+#include "tensorflow/compiler/xla/service/liveness_util.h"
 #include "tensorflow/compiler/xla/service/logical_buffer.h"
 #include "tensorflow/compiler/xla/service/tuple_points_to_analysis.h"
 #include "tensorflow/compiler/xla/status_macros.h"
@@ -140,7 +141,7 @@ class InstructionCopier {
   Status RecordAmbiguousOrNonDistinctIndices(
       const TuplePointsToAnalysis& points_to_analysis);
 
-  // Records instruction buffer indices which have interferring live ranges
+  // Records instruction buffer indices which have interfering live ranges
   // with 'other_instruction' buffers at same index.
   Status RecordIndicesWhichInterfereWithOtherInstruction(
       const BufferLiveness& liveness, const HloInstruction* other_instruction,
@@ -319,6 +320,7 @@ Status InstructionCopier::RecordIndicesWhichInterfereWithOtherInstruction(
           if (liveness.MayInterfere(*instruction_buffer, *other_buffer)) {
             VLOG(2) << "Adding copy of buffer for instruction: "
                     << instruction_->name()
+                    << " instruction_buffer: " << instruction_buffer->ToString()
                     << " at index: " << tensorflow::str_util::Join(index, ",")
                     << " because of interference with buffer: "
                     << other_buffer->ToString();
@@ -351,6 +353,11 @@ Status InstructionCopier::RecordControlPredecessors(
           for (const BufferAlias& alias :
                points_to_analysis.GetBufferAliases(*buffer)) {
             for (HloInstruction* user : alias.instruction()->users()) {
+              if (DoesNotUseOperandBuffer(alias.instruction(), alias.index(),
+                                          user, points_to_analysis)) {
+                continue;
+              }
+
               if (user != instruction_) {
                 control_predecessors_.mutable_element(index)->push_back(user);
               }
@@ -424,7 +431,7 @@ HloInstruction* InstructionCopier::Copy() {
   return copy;
 }
 
-// The 'read_only_indices' are initalized based on points-to analysis on the
+// The 'read_only_indices' are initialized based on points-to analysis on the
 // while body corresponding to 'while_hlo'. If the init buffer corresponding to
 // a read-only index aliases with an entry parameter (or constant), it cannot be
 // considered read-only, and must be copied. This is necessary because some
