@@ -66,7 +66,8 @@ CpuExecutable::CpuExecutable(
   CHECK(sym) << "Symbol " << entry_function_name << " not found.";
   // getAddress can do work under the hood in the jit, so it needs to be
   // guarded by the mutex.
-  compute_function_ = reinterpret_cast<ComputeFunctionType>(sym.getAddress());
+  compute_function_ =
+      reinterpret_cast<ComputeFunctionType>(cantFail(sym.getAddress()));
 }
 
 // Given a pointer to an output buffer (following the CPU JIT calling
@@ -311,10 +312,10 @@ StatusOr<std::unique_ptr<ShapedBuffer>> CpuExecutable::ExecuteOnStream(
   std::vector<bool> buffers_in_result(assignment_->Allocations().size(), false);
   TF_RETURN_IF_ERROR(
       result_buffer->mutable_shape_index_to_buffer_entry()
-          ->ForEachMutableElement(
+          ->ForEachMutableElementWithStatus(
               [&buffers, &buffers_in_result, &result_buffer, this](
-                  const ShapeIndex& index, bool is_leaf, size_t* buffer_entry) {
-                if (is_leaf) {
+                  const ShapeIndex& index, size_t* buffer_entry) {
+                if (ShapeUtil::IsLeafIndex(result_buffer->shape(), index)) {
                   const std::vector<const LogicalBuffer*>& sources =
                       this->GetRootPointsToSet().element(index);
                   // The points to set is unambiguous so the set should be a

@@ -45,6 +45,11 @@ See the @{$python/math_ops} guide.
 @@expm1
 @@log
 @@log1p
+@@sinh
+@@cosh
+@@asinh
+@@acosh
+@@atanh
 @@ceil
 @@floor
 @@maximum
@@ -163,42 +168,58 @@ from tensorflow.python.ops.gen_math_ops import *
 # pylint: enable=wildcard-import
 from tensorflow.python.util import compat
 from tensorflow.python.util.deprecation import deprecated
+from tensorflow.python.util.deprecation import deprecated_args
 
 # Aliases for some automatically-generated names.
 linspace = gen_math_ops.lin_space
 
+arg_max = deprecated(None, "Use `argmax` instead")(arg_max)  # pylint: disable=used-before-assignment
+arg_min = deprecated(None, "Use `argmin` instead")(arg_min)  # pylint: disable=used-before-assignment
+
+
+def _set_doc(doc):
+  def _decorator(func):
+    func.__doc__ = doc
+    return func
+  return _decorator
+
 
 # pylint: disable=redefined-builtin
-# TODO(aselle): deprecate arg_max
-def argmax(input, axis=None, name=None, dimension=None):
+@deprecated_args(None, "Use the `axis` argument instead", "dimension")
+@_set_doc(gen_math_ops.arg_max.__doc__
+          .replace("dimensions", "axes")
+          .replace("dimension", "axis"))
+def argmax(input,
+           axis=None,
+           name=None,
+           dimension=None,
+           output_type=dtypes.int64):
   if dimension is not None:
     if axis is not None:
       raise ValueError("Cannot specify both 'axis' and 'dimension'")
     axis = dimension
   elif axis is None:
     axis = 0
-  return gen_math_ops.arg_max(input, axis, name)
+  return gen_math_ops.arg_max(input, axis, name=name, output_type=output_type)
 
 
-argmax.__doc__ = (gen_math_ops.arg_max.__doc__.replace("dimensions",
-                                                       "axes").replace(
-                                                           "dimension", "axis"))
-
-
-# TODO(aselle:deprecate arg_min)
-def argmin(input, axis=None, name=None, dimension=None):
+@deprecated_args(None, "Use the `axis` argument instead", "dimension")
+@_set_doc(gen_math_ops.arg_min.__doc__
+          .replace("dimensions", "axes")
+          .replace("dimension", "axis"))
+def argmin(input,
+           axis=None,
+           name=None,
+           dimension=None,
+           output_type=dtypes.int64):
   if dimension is not None:
     if axis is not None:
       raise ValueError("Cannot specify both 'axis' and 'dimension'")
     axis = dimension
   elif axis is None:
     axis = 0
-  return gen_math_ops.arg_min(input, axis, name)
+  return gen_math_ops.arg_min(input, axis, name=name, output_type=output_type)
 
-
-argmin.__doc__ = (gen_math_ops.arg_min.__doc__.replace("dimensions",
-                                                       "axes").replace(
-                                                           "dimension", "axis"))
 
 # pylint: enable=redefined-builtin
 
@@ -207,11 +228,6 @@ argmin.__doc__ = (gen_math_ops.arg_min.__doc__.replace("dimensions",
 # pylint: disable=g-docstring-has-escape
 def abs(x, name=None):
   r"""Computes the absolute value of a tensor.
-
-  Given a tensor of real numbers `x`, this operation returns a tensor
-  containing the absolute value of each element in `x`. For example, if x is
-  an input element and y is an output element, this operation computes
-  \\(y = |x|\\).
 
   Given a tensor `x` of complex numbers, this operation returns a tensor of type
   `float32` or `float64` that is the absolute value of each element in `x`. All
@@ -505,7 +521,7 @@ def scalar_mul(scalar, x):
 def pow(x, y, name=None):
   r"""Computes the power of one value to another.
 
-  Given a tensor `x` and a tensor `y`, this operation computes \\\\(x^y\\\\) for
+  Given a tensor `x` and a tensor `y`, this operation computes \\(x^y\\) for
   corresponding elements in `x` and `y`. For example:
 
   ```
@@ -1686,8 +1702,9 @@ def matmul(a,
            name=None):
   """Multiplies matrix `a` by matrix `b`, producing `a` * `b`.
 
-  The inputs must be matrices (or tensors of rank > 2, representing batches of
-  matrices), with matching inner dimensions, possibly after transposition.
+  The inputs must, following any transpositions, be tensors of rank >= 2
+  where the inner 2 dimensions specify valid matrix multiplication arguments,
+  and any further outer dimensions match.
 
   Both matrices must be of the same type. The supported types are:
   `float16`, `float32`, `float64`, `int32`, `complex64`, `complex128`.
@@ -2059,12 +2076,11 @@ def tanh(x, name=None):
 
   Args:
     x: A Tensor or SparseTensor with type `float`, `double`, `int32`,
-      `complex64`, `int64`, or `qint32`.
+      `complex64`, or `int64`.
     name: A name for the operation (optional).
 
   Returns:
-    A Tensor or SparseTensor respectively with the same type as `x` if
-    `x.dtype != qint32` otherwise the return type is `quint8`.
+    A Tensor or SparseTensor respectively with the same type as `x`.
   """
   with ops.name_scope(name, "Tanh", [x]) as name:
     if isinstance(x, sparse_tensor.SparseTensor):

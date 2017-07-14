@@ -381,6 +381,13 @@ def rank_internal(input, name=None, optimize=True):
       return gen_array_ops.rank(input, name=name)
 
 
+def _one_like_dtype(other):
+  if isinstance(other, ops.Tensor):
+    return constant(1, other.dtype)
+  else:
+    return np.ones_like(other).dtype.type(1)
+
+
 def _SliceHelper(tensor, slice_spec, var=None):
   """Overload for Tensor.__getitem__.
 
@@ -402,14 +409,15 @@ def _SliceHelper(tensor, slice_spec, var=None):
 
   # Insert another dimension
   foo = tf.constant([[1,2,3], [4,5,6], [7,8,9]])
-  print(foo[tf.newaxis, :, :].eval()) # => [[[3,2,1], [9,8,7]]]
-  print(foo[:, tf.newaxis, :].eval()) # => [[[3,2,1]], [[9,8,7]]]
-  print(foo[:, :, tf.newaxis].eval()) # => [[[3],[2],[1]], [[9],[8],[7]]]
+  print(foo[tf.newaxis, :, :].eval()) # => [[[1,2,3], [4,5,6], [7,8,9]]]
+  print(foo[:, tf.newaxis, :].eval()) # => [[[1,2,3]], [[4,5,6]], [[7,8,9]]]
+  print(foo[:, :, tf.newaxis].eval()) # => [[[1],[2],[3]], [[4],[5],[6]], [[7],[8],[9]]]
 
   # Ellipses (3 equivalent operations)
-  print(foo[tf.newaxis, :, :].eval()) # => [[[3,2,1], [9,8,7]]]
-  print(foo[tf.newaxis, ...].eval()) # => [[[3,2,1], [9,8,7]]]
-  print(foo[tf.newaxis].eval()) # => [[[3,2,1], [9,8,7]]]
+  foo = tf.constant([[1,2,3], [4,5,6], [7,8,9]])
+  print(foo[tf.newaxis, :, :].eval()) # => [[[1,2,3], [4,5,6], [7,8,9]]]
+  print(foo[tf.newaxis, ...].eval()) # => [[[1,2,3], [4,5,6], [7,8,9]]]
+  print(foo[tf.newaxis].eval()) # => [[[1,2,3], [4,5,6], [7,8,9]]]
   ```
 
   Notes:
@@ -443,7 +451,6 @@ def _SliceHelper(tensor, slice_spec, var=None):
   ellipsis_mask = 0
   for s in slice_spec:
     if isinstance(s, _baseslice):
-      strides.append(s.step if s.step is not None else 1)
       # python doesn't always use None when constructing ranges
       # for example a[:] gives slice(None,sys.maxsize,None)
       # whereas a[::1] gives slice(None,None,None)
@@ -457,6 +464,11 @@ def _SliceHelper(tensor, slice_spec, var=None):
       else:
         end.append(0)
         end_mask |= (1 << index)
+      if s.step is not None:
+        strides.append(s.step)
+      else:
+        # Use a 1 of the same dtype as begin.
+        strides.append(_one_like_dtype(begin[-1]))
     elif s is Ellipsis:
       begin.append(0)
       end.append(0)
@@ -470,10 +482,7 @@ def _SliceHelper(tensor, slice_spec, var=None):
     else:
       begin.append(s)
       end.append(s + 1)
-      if isinstance(s, ops.Tensor):
-        strides.append(constant(1, s.dtype))
-      else:
-        strides.append(np.ones_like(s).dtype.type(1))
+      strides.append(_one_like_dtype(s))
       shrink_axis_mask |= (1 << index)
     index += 1
 
@@ -512,6 +521,10 @@ def slice(input_, begin, size, name=None):
   slice is represented as an offset in each dimension of `input`. In other
   words, `begin[i]` is the offset into the 'i'th dimension of `input` that you
   want to slice from.
+
+  Note that @{tf.Tensor.__getitem__} is typically a more pythonic way to
+  perform slices, as it allows you to write `foo[3:7, :-2]` instead of
+  `tf.slice([3, 0], [4, foo.get_shape()[1]-2])`.
 
   `begin` is zero-based; `size` is one-based. If `size[i]` is -1,
   all remaining elements in dimension i are included in the
@@ -708,10 +721,10 @@ def _SliceHelperVar(var, slice_spec):
   A = tf.Variable([[1,2,3], [4,5,6], [7,8,9]], dtype=tf.float32)
   with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
-    print sess.run(A[:2, :2]) # => [[1,2], [4,5]]
+    print(sess.run(A[:2, :2]))  # => [[1,2], [4,5]]
 
     op = A[:2,:2].assign(22. * tf.ones((2, 2)))
-    print sess.run(op) # => [[22, 22, 3], [22, 22, 6], [7,8,9]]
+    print(sess.run(op))  # => [[22, 22, 3], [22, 22, 6], [7,8,9]]
   ```
 
   Note that assignments currently do not support NumPy broadcasting
@@ -756,11 +769,14 @@ def parallel_stack(values, name="parallel_stack"):
   parallel_stack([x, y, z])  # => [[1, 4], [2, 5], [3, 6]]
   ```
 
-  The difference between stack and parallel_stack is that stack requires all
-  of the inputs be computed before the operation will begin but doesn't require
-  that the input shapes be known during graph construction.  Parallel stack
-  will copy pieces of the input into the output as they become available, in
-  some situations this can provide a performance benefit.
+  The difference between `stack` and `parallel_stack` is that `stack` requires
+  all the inputs be computed before the operation will begin but doesn't require
+  that the input shapes be known during graph construction.
+
+  `parallel_stack` will copy pieces of the input into the output as they become
+  available, in some situations this can provide a performance benefit.
+
+  Unlike `stack`, `parallel_stack` does NOT support backpropagation.
 
   This is the opposite of unstack.  The numpy equivalent is
 
@@ -1196,7 +1212,7 @@ def split(value, num_or_size_splits, axis=0, num=None, name="split"):
       evenly divide `value.shape[axis]`; otherwise the sum of sizes along the
       split dimension must match that of the `value`.
     axis: A 0-D `int32` `Tensor`. The dimension along which to split.
-      Must be in the range `[0, rank(value))`. Defaults to 0.
+      Must be in the range `[-rank(value), rank(value))`. Defaults to 0.
     num: Optional, used to specify the number of outputs when it cannot be
       inferred from the shape of `size_splits`.
     name: A name for the operation (optional).
@@ -1365,7 +1381,7 @@ def zeros(shape, dtype=dtypes.float32, name=None):
   ```
 
   Args:
-    shape: Either a list of integers, or a 1-D `Tensor` of type `int32`.
+    shape: A list of integers, a tuple of integers, or a 1-D `Tensor` of type `int32`.
     dtype: The type of an element in the resulting `Tensor`.
     name: A name for the operation (optional).
 
@@ -1479,7 +1495,7 @@ def ones(shape, dtype=dtypes.float32, name=None):
   ```
 
   Args:
-    shape: Either a list of integers, or a 1-D `Tensor` of type `int32`.
+    shape: A list of integers, a tuple of integers, or a 1-D `Tensor` of type `int32`.
     dtype: The type of an element in the resulting `Tensor`.
     name: A name for the operation (optional).
 
@@ -1540,7 +1556,7 @@ def _normalize_sparse_shape(shape, name):
     for el in shape:
       if el is None:
         return None
-  return ops.convert_to_tensor(shape, name=name)
+  return ops.convert_to_tensor(shape, dtype=dtypes.int64, name=name)
 
 
 def sparse_placeholder(dtype, shape=None, name=None):
@@ -1597,7 +1613,7 @@ def sparse_placeholder(dtype, shape=None, name=None):
 # pylint: enable=redefined-outer-name
 
 
-def pad(tensor, paddings, mode="CONSTANT", name=None):  # pylint: disable=invalid-name
+def pad(tensor, paddings, mode="CONSTANT", name=None, constant_values=0):  # pylint: disable=invalid-name
   """Pads a tensor.
 
   This operation pads a `tensor` according to the `paddings` you specify.
@@ -1619,6 +1635,7 @@ def pad(tensor, paddings, mode="CONSTANT", name=None):  # pylint: disable=invali
   ```python
   # 't' is [[1, 2, 3], [4, 5, 6]].
   # 'paddings' is [[1, 1,], [2, 2]].
+  # 'constant_values' is 0.
   # rank of 't' is 2.
   pad(t, paddings, "CONSTANT") ==> [[0, 0, 0, 0, 0, 0, 0],
                                     [0, 0, 1, 2, 3, 0, 0],
@@ -1641,6 +1658,8 @@ def pad(tensor, paddings, mode="CONSTANT", name=None):  # pylint: disable=invali
     paddings: A `Tensor` of type `int32`.
     mode: One of "CONSTANT", "REFLECT", or "SYMMETRIC" (case-insensitive)
     name: A name for the operation (optional).
+    constant_values: In "CONSTANT" mode, the scalar pad value to use. Must be
+      same type as `tensor`.
 
   Returns:
     A `Tensor`. Has the same type as `tensor`.
@@ -1653,7 +1672,12 @@ def pad(tensor, paddings, mode="CONSTANT", name=None):  # pylint: disable=invali
   # NumPy uses all lower-case modes.
   mode = mode.upper()
   if mode == "CONSTANT":
-    return gen_array_ops._pad(tensor, paddings, name=name)
+    # TODO(rjryan): Once the forward compatibility period (3 weeks) have passed
+    # remove the "Pad" fallback here.
+    if constant_values != 0:
+      return gen_array_ops._pad_v2(tensor, paddings, constant_values, name=name)
+    else:
+      return gen_array_ops._pad(tensor, paddings, name=name)
   if mode == "REFLECT":
     return gen_array_ops._mirror_pad(tensor,
                                      paddings,
@@ -1887,22 +1911,36 @@ def edit_distance(hypothesis, truth, normalize=True, name="edit_distance"):
 def _FakeQuantWithMinMaxArgsGradient(op, grad):
   """Gradient for FakeQuantWithMinMaxArgs op."""
   return fake_quant_with_min_max_args_gradient(
-      grad, op.inputs[0], min=op.get_attr("min"), max=op.get_attr("max"))
+      grad,
+      op.inputs[0],
+      min=op.get_attr("min"),
+      max=op.get_attr("max"),
+      num_bits=op.get_attr("num_bits"),
+      narrow_range=op.get_attr("narrow_range"))
 
 
 @ops.RegisterGradient("FakeQuantWithMinMaxVars")
 def _FakeQuantWithMinMaxVarsGradient(op, grad):
   """Gradient for FakeQuantWithMinMaxVars op."""
-  return fake_quant_with_min_max_vars_gradient(grad, op.inputs[0], op.inputs[1],
-                                               op.inputs[2])
+  return fake_quant_with_min_max_vars_gradient(
+      grad,
+      op.inputs[0],
+      op.inputs[1],
+      op.inputs[2],
+      num_bits=op.get_attr("num_bits"),
+      narrow_range=op.get_attr("narrow_range"))
 
 
 @ops.RegisterGradient("FakeQuantWithMinMaxVarsPerChannel")
 def _FakeQuantWithMinMaxVarsPerChannelGradient(op, grad):
   """Gradient for FakeQuantWithMinMaxVarsPerChannel op."""
-  return fake_quant_with_min_max_vars_per_channel_gradient(grad, op.inputs[0],
-                                                           op.inputs[1],
-                                                           op.inputs[2])
+  return fake_quant_with_min_max_vars_per_channel_gradient(
+      grad,
+      op.inputs[0],
+      op.inputs[1],
+      op.inputs[2],
+      num_bits=op.get_attr("num_bits"),
+      narrow_range=op.get_attr("narrow_range"))
 
 
 def required_space_to_batch_paddings(input_shape,
@@ -2362,3 +2400,14 @@ reverse_sequence.__doc__ = deprecation.rewrite_argument_docstring(
     deprecation.rewrite_argument_docstring(
         gen_array_ops.reverse_sequence.__doc__, "batch_dim", "batch_axis"),
     "seq_dim", "seq_axis")
+
+
+def gather(params, indices, validate_indices=None, name=None, axis=0):
+  # TODO(rjryan): Remove "Gather" creation in favor of GatherV2 once the forward
+  # compatibility 3 week period has passed.
+  if axis == 0:
+    return gen_array_ops.gather(params, indices,
+                                validate_indices=validate_indices, name=name)
+  else:
+    return gen_array_ops.gather_v2(params, indices, axis, name=name)
+gather.__doc__ = gen_array_ops.gather_v2.__doc__

@@ -1,5 +1,12 @@
 # Description:
 #   Python Client Code of the TensorFlow Debugger (tfdbg).
+#
+# Public target(s):
+#
+# ":debug_py": Public Python methods and classes of tfdbg.
+#   For API documentation, see https://www.tensorflow.org/api_docs/python/tfdbg
+#   For a user interface walkthrough, see https://www.tensorflow.org/programmers_guide/debugger
+# (Omitted internal-only public target)
 
 package(
     default_visibility = ["//tensorflow:internal"],
@@ -16,6 +23,7 @@ exports_files(["LICENSE"])
 load("//tensorflow:tensorflow.bzl", "cuda_py_test")
 load("//tensorflow:tensorflow.bzl", "py_test")
 load("//tensorflow:tensorflow.bzl", "if_not_windows")
+load("//tensorflow:tensorflow.bzl", "tf_gen_op_wrapper_py")
 
 py_library(
     name = "debug_py",
@@ -24,6 +32,7 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
         ":debug_data",
+        ":debug_gradients",
         ":debug_utils",
         ":hooks",
         ":local_cli_wrapper",
@@ -50,6 +59,24 @@ py_library(
         "//tensorflow/python:framework",
         "//tensorflow/python:platform",
         "//third_party/py/numpy",
+    ],
+)
+
+tf_gen_op_wrapper_py(
+    name = "debug_ops",
+    deps = ["//tensorflow/core:debug_ops_op_lib"],
+)
+
+py_library(
+    name = "debug_gradients",
+    srcs = ["lib/debug_gradients.py"],
+    srcs_version = "PY2AND3",
+    deps = [
+        ":debug_data",
+        ":debug_ops",
+        "//tensorflow/python:framework",
+        "//tensorflow/python:platform",
+        "@six_archive//:six",
     ],
 )
 
@@ -367,9 +394,30 @@ py_test(
     srcs_version = "PY2AND3",
     deps = [
         ":debug_data",
+        "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_test_lib",
         "//tensorflow/python:platform_test",
         "//third_party/py/numpy",
+    ],
+)
+
+cuda_py_test(
+    name = "debug_gradients_test",
+    size = "small",
+    srcs = [
+        "lib/debug_gradients_test.py",
+    ],
+    additional_deps = [
+        ":debug_data",
+        ":debug_gradients",
+        ":debug_utils",
+        "//tensorflow/python:client",
+        "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python:gradients",
+        "//tensorflow/python:math_ops",
+        "//tensorflow/python:platform_test",
+        "//tensorflow/python:training",
+        "//tensorflow/python:variables",
     ],
 )
 
@@ -544,6 +592,22 @@ cuda_py_test(
         "//tensorflow/python:variables",
     ],
     tags = ["notsan"],
+)
+
+cuda_py_test(
+    name = "session_debug_multi_gpu_test",
+    size = "small",
+    srcs = ["lib/session_debug_multi_gpu_test.py"],
+    additional_deps = [
+        ":debug_data",
+        ":debug_utils",
+        "//tensorflow/python:client",
+        "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python:math_ops",
+        "//tensorflow/python:platform_test",
+        "//tensorflow/python:variables",
+    ],
 )
 
 py_test(
