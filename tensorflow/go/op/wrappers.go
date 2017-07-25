@@ -5374,21 +5374,55 @@ func Identity(scope *Scope, input tf.Output) (output tf.Output) {
 	return op.Output(0)
 }
 
+// IteratorFromStringHandleAttr is an optional argument to IteratorFromStringHandle.
+type IteratorFromStringHandleAttr func(optionalAttr)
+
+// IteratorFromStringHandleOutputTypes sets the optional output_types attribute to value.
+//
+// value: If specified, defines the type of each tuple component in an
+// element produced by the resulting iterator.
+// If not specified, defaults to <>
+//
+// REQUIRES: len(value) >= 0
+func IteratorFromStringHandleOutputTypes(value []tf.DataType) IteratorFromStringHandleAttr {
+	return func(m optionalAttr) {
+		m["output_types"] = value
+	}
+}
+
+// IteratorFromStringHandleOutputShapes sets the optional output_shapes attribute to value.
+//
+// value: If specified, defines the shape of each tuple component in an
+// element produced by the resulting iterator.
+// If not specified, defaults to <>
+//
+// REQUIRES: len(value) >= 0
+func IteratorFromStringHandleOutputShapes(value []tf.Shape) IteratorFromStringHandleAttr {
+	return func(m optionalAttr) {
+		m["output_shapes"] = value
+	}
+}
+
 // Converts the given string representing a handle to an iterator to a resource.
 //
 // Arguments:
 //	string_handle: A string representation of the given handle.
 //
 // Returns A handle to an iterator resource.
-func IteratorFromStringHandle(scope *Scope, string_handle tf.Output) (resource_handle tf.Output) {
+func IteratorFromStringHandle(scope *Scope, string_handle tf.Output, optional ...IteratorFromStringHandleAttr) (resource_handle tf.Output) {
 	if scope.Err() != nil {
 		return
+	}
+	attrs := map[string]interface{}{}
+	for _, a := range optional {
+		a(attrs)
 	}
 	opspec := tf.OpSpec{
 		Type: "IteratorFromStringHandle",
 		Input: []tf.Input{
 			string_handle,
 		},
+		Attrs: attrs,
 	}
 	op := scope.AddOperation(opspec)
 	return op.Output(0)
@@ -5698,6 +5732,24 @@ func CacheDataset(scope *Scope, input_dataset tf.Output, filename tf.Output, out
 			input_dataset, filename,
 		},
 		Attrs: attrs,
+	}
+	op := scope.AddOperation(opspec)
+	return op.Output(0)
+}
+
+// Identity op for gradient debugging.
+//
+// This op is hidden from public in Python. It is used by TensorFlow Debugger to
+// register gradient tensors for gradient debugging.
+func DebugGradientIdentity(scope *Scope, input tf.Output) (output tf.Output) {
+	if scope.Err() != nil {
+		return
+	}
+	opspec := tf.OpSpec{
+		Type: "DebugGradientIdentity",
+		Input: []tf.Input{
+			input,
+		},
 	}
 	op := scope.AddOperation(opspec)
 	return op.Output(0)
@@ -14441,51 +14493,6 @@ func Tanh(scope *Scope, x tf.Output) (y tf.Output) {
 	return op.Output(0)
 }
 
-// Computes inverse hyperbolic sine of x element-wise.
-func Asinh(scope *Scope, x tf.Output) (y tf.Output) {
-	if scope.Err() != nil {
-		return
-	}
-	opspec := tf.OpSpec{
-		Type: "Asinh",
-		Input: []tf.Input{
-			x,
-		},
-	}
-	op := scope.AddOperation(opspec)
-	return op.Output(0)
-}
-
-// Computes inverse hyperbolic cosine of x element-wise.
-func Acosh(scope *Scope, x tf.Output) (y tf.Output) {
-	if scope.Err() != nil {
-		return
-	}
-	opspec := tf.OpSpec{
-		Type: "Acosh",
-		Input: []tf.Input{
-			x,
-		},
-	}
-	op := scope.AddOperation(opspec)
-	return op.Output(0)
-}
-
-// Computes inverse hyperbolic tangent of x element-wise.
-func Atanh(scope *Scope, x tf.Output) (y tf.Output) {
-	if scope.Err() != nil {
-		return
-	}
-	opspec := tf.OpSpec{
-		Type: "Atanh",
-		Input: []tf.Input{
-			x,
-		},
-	}
-	op := scope.AddOperation(opspec)
-	return op.Output(0)
-}
-
 // TextLineReaderV2Attr is an optional argument to TextLineReaderV2.
 type TextLineReaderV2Attr func(optionalAttr)
 
@@ -18288,6 +18295,21 @@ func AssignAddVariableOp(scope *Scope, resource tf.Output, value tf.Output) (o *
 	return scope.AddOperation(opspec)
 }
 
+// Computes inverse hyperbolic sine of x element-wise.
+func Asinh(scope *Scope, x tf.Output) (y tf.Output) {
+	if scope.Err() != nil {
+		return
+	}
+	opspec := tf.OpSpec{
+		Type: "Asinh",
+		Input: []tf.Input{
+			x,
+		},
+	}
+	op := scope.AddOperation(opspec)
+	return op.Output(0)
+}
+
 // Real-valued fast Fourier transform.
 //
 // Computes the 1-dimensional discrete Fourier transform of a real-valued signal
@@ -18798,14 +18820,16 @@ func Imag(scope *Scope, input tf.Output, optional ...ImagAttr) (output tf.Output
 // Arguments:
 //	filenames: A scalar or a vector containing the name(s) of the file(s) to be
 // read.
-func TextLineDataset(scope *Scope, filenames tf.Output) (handle tf.Output) {
+//	compression_type: A scalar containing either (i) the empty string (no
+// compression), (ii) "ZLIB", or (iii) "GZIP".
+func TextLineDataset(scope *Scope, filenames tf.Output, compression_type tf.Output) (handle tf.Output) {
 	if scope.Err() != nil {
 		return
 	}
 	opspec := tf.OpSpec{
 		Type: "TextLineDataset",
 		Input: []tf.Input{
-			filenames,
+			filenames, compression_type,
 		},
 	}
 	op := scope.AddOperation(opspec)
@@ -21126,6 +21150,21 @@ func SerializeManySparse(scope *Scope, sparse_indices tf.Output, sparse_values t
 	return op.Output(0)
 }
 
+// Computes inverse hyperbolic cosine of x element-wise.
+func Acosh(scope *Scope, x tf.Output) (y tf.Output) {
+	if scope.Err() != nil {
+		return
+	}
+	opspec := tf.OpSpec{
+		Type: "Acosh",
+		Input: []tf.Input{
+			x,
+		},
+	}
+	op := scope.AddOperation(opspec)
+	return op.Output(0)
+}
+
 // Computes the reverse mode backpropagated gradient of the Cholesky algorithm.
 //
 // For an explanation see "Differentiation of the Cholesky algorithm" by
@@ -21148,6 +21187,21 @@ func CholeskyGrad(scope *Scope, l tf.Output, grad tf.Output) (output tf.Output) 
 		Type: "CholeskyGrad",
 		Input: []tf.Input{
 			l, grad,
+		},
+	}
+	op := scope.AddOperation(opspec)
+	return op.Output(0)
+}
+
+// Computes inverse hyperbolic tangent of x element-wise.
+func Atanh(scope *Scope, x tf.Output) (y tf.Output) {
+	if scope.Err() != nil {
+		return
+	}
+	opspec := tf.OpSpec{
+		Type: "Atanh",
+		Input: []tf.Input{
+			x,
 		},
 	}
 	op := scope.AddOperation(opspec)
@@ -22009,7 +22063,7 @@ func Exp(scope *Scope, x tf.Output) (y tf.Output) {
 //  `output[i] = numeric_limits<T>::min()`.
 //
 // <div style="width:70%; margin:auto; margin-bottom:10px; margin-top:20px;">
-// <img style="width:100%" src="https://www.tensorflow.org/images/UnsortedSegmentSum.png" alt>
+// <img style="width:100%" src="https://www.tensorflow.org/images/UnsortedSegmentMax.png" alt>
 // </div>
 //
 // Arguments:

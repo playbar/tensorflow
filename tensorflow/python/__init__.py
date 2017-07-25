@@ -154,6 +154,7 @@ _allowed_symbols = [
     'RunMetadata',
     'SessionLog',
     'Summary',
+    'SummaryMetadata',
     'TensorInfo',  # Used for tf.saved_model functionality.
 ]
 
@@ -207,6 +208,7 @@ _allowed_symbols.extend([
     'uint16',
     'uint8',
     'resource',
+    'variant',
 ])
 
 # Export modules and constants.

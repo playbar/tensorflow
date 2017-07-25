@@ -205,6 +205,10 @@ tf_module {
     mtype: "<class \'google.protobuf.pyext.cpp_message.GeneratedProtocolMessageType\'>"
   }
   member {
+    name: "SummaryMetadata"
+    mtype: "<class \'google.protobuf.pyext.cpp_message.GeneratedProtocolMessageType\'>"
+  }
+  member {
     name: "TFRecordReader"
     mtype: "<type \'type\'>"
   }
@@ -487,6 +491,10 @@ tf_module {
   member {
     name: "variance_scaling_initializer"
     mtype: "<type \'type\'>"
+  }
+  member {
+    name: "variant"
+    mtype: "<class \'tensorflow.python.framework.dtypes.DType\'>"
   }
   member {
     name: "zeros_initializer"

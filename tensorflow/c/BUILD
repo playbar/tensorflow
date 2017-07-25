@@ -103,6 +103,19 @@ tf_cuda_library(
 # -----------------------------------------------------------------------------
 # Tests
 
+tf_cuda_library(
+    name = "c_test_util",
+    testonly = 1,
+    srcs = ["c_test_util.cc"],
+    hdrs = ["c_test_util.h"],
+    deps = [
+        ":c_api",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:test",
+    ],
+)
+
 tf_cc_test(
     name = "c_api_test",
     size = "small",
@@ -120,6 +133,7 @@ tf_cc_test(
     # linkstatic = tf_kernel_tests_linkstatic(),
     deps = [
         ":c_api",
+        ":c_test_util",
         "//tensorflow/cc:cc_ops",
         "//tensorflow/cc:grad_ops",
         "//tensorflow/cc/saved_model:signature_constants",
@@ -139,6 +153,19 @@ tf_cc_test(
     ],
 )
 
+tf_cc_test(
+    name = "while_loop_test",
+    size = "small",
+    srcs = ["while_loop_test.cc"],
+    deps = [
+        ":c_api",
+        ":c_test_util",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+    ],
+)
+
 tf_custom_op_library(
     name = "test_op.so",
     srcs = ["test_op.cc"],
@@ -153,6 +180,7 @@ tf_cuda_library(
     hdrs = ["python_api.h"],
     visibility = ["//tensorflow/python:__pkg__"],
     deps = [
+        ":c_api",
         ":c_api_internal",
     ],
 )
