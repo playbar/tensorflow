@@ -21,11 +21,11 @@ limitations under the License.
 #include <list>
 #include <utility>
 
-#include "external/llvm/include/llvm/ExecutionEngine/ExecutionEngine.h"
-#include "external/llvm/include/llvm/ExecutionEngine/SectionMemoryManager.h"
-#include "external/llvm/include/llvm/IR/Mangler.h"
-#include "external/llvm/include/llvm/Support/CodeGen.h"
-#include "external/llvm/include/llvm/Support/Host.h"
+#include "llvm/ExecutionEngine/ExecutionEngine.h"
+#include "llvm/ExecutionEngine/SectionMemoryManager.h"
+#include "llvm/IR/Mangler.h"
+#include "llvm/Support/CodeGen.h"
+#include "llvm/Support/Host.h"
 #include "tensorflow/compiler/xla/ptr_util.h"
 #include "tensorflow/compiler/xla/service/cpu/cpu_runtime.h"
 #include "tensorflow/compiler/xla/service/cpu/cpu_runtime_avx.h"
@@ -93,10 +93,8 @@ class JITSymbolTable {
     ADD_JIT_SYMBOL_TO_TABLE(ReleaseOutfeedBufferAfterPopulation);
     ADD_JIT_SYMBOL_TO_TABLE(ExpV8F32);
     ADD_JIT_SYMBOL_TO_TABLE(LogV8F32);
-    ADD_JIT_SYMBOL_TO_TABLE(TanhV8F32);
     ADD_JIT_SYMBOL_TO_TABLE(ExpV4F32);
     ADD_JIT_SYMBOL_TO_TABLE(LogV4F32);
-    ADD_JIT_SYMBOL_TO_TABLE(TanhV4F32);
     ADD_JIT_SYMBOL_TO_TABLE(EigenConvF32);
     ADD_JIT_SYMBOL_TO_TABLE(EigenMatMulF32);
     ADD_JIT_SYMBOL_TO_TABLE(EigenMatMulF64);

@@ -64,6 +64,7 @@ load(
     "//tensorflow:tensorflow.bzl",
     "full_path",
     "if_android",
+    "if_not_android_mips_and_mips64",
     "if_ios",
     "if_linux_x86_64",
     "if_not_mobile",
@@ -288,7 +289,6 @@ cc_library(
         "platform/env_time.h",
         "platform/file_system.h",
         "platform/fingerprint.h",
-        "platform/grpc_response_reader.h",
         "platform/init_main.h",
         "platform/logging.h",
         "platform/macros.h",
@@ -347,6 +347,7 @@ tf_cuda_library(
         "framework/allocator.h",
         "framework/variant.h",
         "framework/variant_encode_decode.h",
+        "framework/variant_tensor_data.h",
         "framework/allocator_registry.h",
         "framework/attr_value_util.h",
         "framework/bfloat16.h",
@@ -933,9 +934,7 @@ filegroup(
 cc_library(
     name = "android_tensorflow_lib_lite",
     srcs = if_android(["//tensorflow/core:android_srcs"]),
-    copts = tf_copts() + [
-        "-Os",
-    ],
+    copts = tf_copts() + if_not_android_mips_and_mips64(["-Os"]),
     linkopts = ["-lz"],
     tags = [
         "manual",
@@ -1249,6 +1248,8 @@ LIB_INTERNAL_WINDOWS_DEPS = glob(
     ] + [
         "framework/resource_handle.h",
         "framework/resource_handle.cc",
+        "framework/variant_tensor_data.h",
+        "framework/variant_tensor_data.cc",
     ],
     exclude = [
         "**/*test*",
@@ -1427,6 +1428,86 @@ cc_library(
         ":lib",
         ":lib_internal",
         "//tensorflow/core/platform/default/build_config:jpeg",
+    ],
+)
+
+cc_library(
+    name = "android_jpeg_internal",
+    srcs = if_android([
+        "lib/jpeg/jpeg_handle.cc",
+        "lib/jpeg/jpeg_mem.cc",
+        "platform/jpeg.h",
+    ]),
+    hdrs = [
+        "lib/core/stringpiece.h",
+        "lib/jpeg/jpeg_handle.h",
+        "lib/jpeg/jpeg_mem.h",
+        "platform/default/dynamic_annotations.h",
+        "platform/default/integral_types.h",
+        "platform/default/logging.h",
+        "platform/dynamic_annotations.h",
+        "platform/logging.h",
+        "platform/macros.h",
+        "platform/mem.h",
+        "platform/platform.h",
+        "platform/types.h",
+    ],
+    copts = tf_copts(),
+    linkopts = ["-ldl"],
+    deps = [
+        "//tensorflow/core/platform/default/build_config:jpeg",
+    ],
+)
+
+cc_library(
+    name = "android_gif_internal",
+    srcs = if_android([
+        "lib/gif/gif_io.cc",
+        "platform/gif.h",
+    ]),
+    hdrs = [
+        "lib/core/stringpiece.h",
+        "lib/gif/gif_io.h",
+        "lib/gtl/cleanup.h",
+        "platform/default/dynamic_annotations.h",
+        "platform/default/integral_types.h",
+        "platform/default/logging.h",
+        "platform/dynamic_annotations.h",
+        "platform/logging.h",
+        "platform/macros.h",
+        "platform/mem.h",
+        "platform/platform.h",
+        "platform/types.h",
+    ],
+    copts = tf_copts(),
+    linkopts = ["-ldl"],
+    deps = [
+        "//tensorflow/core/platform/default/build_config:gif",
+    ],
+)
+
+cc_library(
+    name = "android_png_internal",
+    srcs = if_android([
+        "lib/png/png_io.cc",
+        "platform/png.h",
+    ]),
+    hdrs = [
+        "lib/core/casts.h",
+        "lib/core/stringpiece.h",
+        "lib/png/png_io.h",
+        "platform/cpu_info.h",
+        "platform/default/integral_types.h",
+        "platform/default/logging.h",
+        "platform/logging.h",
+        "platform/macros.h",
+        "platform/platform.h",
+        "platform/types.h",
+    ],
+    copts = tf_copts(),
+    linkopts = ["-ldl"],
+    deps = [
+        "@png_archive//:png",
     ],
 )
 

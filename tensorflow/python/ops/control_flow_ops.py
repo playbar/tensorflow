@@ -61,6 +61,7 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.framework import tensor_shape
+from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gen_array_ops
 from tensorflow.python.ops import gen_control_flow_ops
@@ -983,9 +984,16 @@ class GradLoopState(object):
             # the right control flow context.
             real_value = self._grad_context.AddValue(cur_value)
             break
+        elif constant_op.is_constant(cur_value):
+          # If the value to be forwarded is a constant, clone the constant in
+          # the gradient loop rather than using a stack.
+          # TODO(phawkins): consider hoisting the constant out of the loop
+          # instead.
+          real_value = constant_op.constant(
+              tensor_util.constant_value(cur_value), dtype=cur_value.dtype)
+          break
         else:
           # Record the history of this value in forward_ctxt.
-          # TODO(yuanbyu): Avoid recording constants.
           self._grad_context.Exit()
           history_value = cur_grad_state.AddForwardAccumulator(cur_value)
           self._grad_context.Enter()
@@ -3003,37 +3011,43 @@ def case(pred_fn_pairs, default, exclusive=False, strict=False, name="case"):
   deterministic, so that variables created in conditional branches are created
   in fixed order across runs.
 
-  Example 1:
-    Pseudocode:
-    ```
-      if (x < y) return 17;
-      else return 23;
-    ```
+  **Example 1:**
 
-    Expressions:
-    ```
-      f1 = lambda: tf.constant(17)
-      f2 = lambda: tf.constant(23)
-      r = case([(tf.less(x, y), f1)], default=f2)
-    ```
+  Pseudocode:
 
-  Example 2:
-    Pseudocode:
-    ```
-      if (x < y && x > z) raise OpError("Only one predicate may evaluate true");
-      if (x < y) return 17;
-      else if (x > z) return 23;
-      else return -1;
-    ```
+  ```
+  if (x < y) return 17;
+  else return 23;
+  ```
 
-    Expressions:
-    ```
-      def f1(): return tf.constant(17)
-      def f2(): return tf.constant(23)
-      def f3(): return tf.constant(-1)
-      r = case({tf.less(x, y): f1, tf.greater(x, z): f2},
-               default=f3, exclusive=True)
-    ```
+  Expressions:
+
+  ```python
+  f1 = lambda: tf.constant(17)
+  f2 = lambda: tf.constant(23)
+  r = case([(tf.less(x, y), f1)], default=f2)
+  ```
+
+  **Example 2:**
+
+  Pseudocode:
+
+  ```
+  if (x < y && x > z) raise OpError("Only one predicate may evaluate true");
+  if (x < y) return 17;
+  else if (x > z) return 23;
+  else return -1;
+  ```
+
+  Expressions:
+
+  ```python
+  def f1(): return tf.constant(17)
+  def f2(): return tf.constant(23)
+  def f3(): return tf.constant(-1)
+  r = case({tf.less(x, y): f1, tf.greater(x, z): f2},
+           default=f3, exclusive=True)
+  ```
 
   Args:
     pred_fn_pairs: Dict or list of pairs of a boolean scalar tensor and a

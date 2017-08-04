@@ -277,7 +277,7 @@ cc_binary(
     linkshared = 1,
     deps = [
         "//tensorflow/core:framework_headers_lib",
-        "@protobuf//:protobuf_headers",
+        "@protobuf_archive//:protobuf_headers",
     ],
 )
 
@@ -418,6 +418,7 @@ py_library(
         ":cpp_shape_inference_proto_py",
         ":errors",
         ":framework_for_generated_wrappers",
+        ":function",
         ":graph_util",
         ":lib",
         ":platform",
@@ -503,9 +504,20 @@ py_library(
         ":array_ops",
         ":dtypes",
         ":framework_ops",
+        ":graph_to_function_def",
         ":op_def_registry",
         ":util",
         ":variable_scope",
+        "//tensorflow/core:protos_all_py",
+    ],
+)
+
+py_library(
+    name = "graph_to_function_def",
+    srcs = ["framework/graph_to_function_def.py"],
+    srcs_version = "PY2AND3",
+    deps = [
+        ":op_def_registry",
         "//tensorflow/core:protos_all_py",
     ],
 )
@@ -2177,6 +2189,7 @@ cuda_py_test(
         ":dtypes",
         ":framework_test_lib",
     ],
+    tags = ["no_windows"],
 )
 
 cuda_py_test(
@@ -2518,7 +2531,7 @@ py_library(
     deps = [
         "//third_party/py/numpy",
         "@org_python_pypi_backports_weakref",
-        "@protobuf//:protobuf_python",
+        "@protobuf_archive//:protobuf_python",
         "@six_archive//:six",
     ],
 )
@@ -3797,26 +3810,6 @@ cuda_py_test(
         "//tensorflow/core:protos_all_py",
     ],
     main = "ops/concat_benchmark.py",
-)
-
-cuda_py_test(
-    name = "conv2d_benchmark",
-    size = "large",
-    srcs = ["ops/conv2d_benchmark.py"],
-    additional_deps = [
-        ":client",
-        ":client_testlib",
-        ":control_flow_ops",
-        ":framework_for_generated_wrappers",
-        ":nn_ops",
-        ":platform",
-        ":platform_benchmark",
-        ":random_ops",
-        ":variables",
-        "//third_party/py/numpy",
-        "//tensorflow/core:protos_all_py",
-    ],
-    main = "ops/conv2d_benchmark.py",
 )
 
 cuda_py_test(

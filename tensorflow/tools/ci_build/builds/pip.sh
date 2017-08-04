@@ -73,6 +73,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/builds_common.sh"
 
 
+SKIP_RETURN_CODE=112
+
+
 # Get the command line arguments
 CONTAINER_TYPE=$( echo "$1" | tr '[:upper:]' '[:lower:]' )
 shift
@@ -296,7 +299,7 @@ create_activate_virtualenv_and_install_tensorflow() {
 
   # Upgrade pip so it supports tags such as cp27mu, manylinux1 etc.
   echo "Upgrade pip in virtualenv"
-  pip install --upgrade pip==8.1.2
+  pip install --upgrade pip==9.0.1
 
   # Force tensorflow reinstallation. Otherwise it may not get installed from
   # last build if it had the same version number as previous build.
@@ -310,6 +313,13 @@ create_activate_virtualenv_and_install_tensorflow() {
 # Smoke test of tensorflow install in clean virtualenv
 ################################################################################
 do_clean_virtualenv_smoke_test() {
+  if [[ -n "${NO_TEST_ON_INSTALL}" ]] &&
+       [[ "${NO_TEST_ON_INSTALL}" != "0" ]]; then
+    echo "NO_TEST_ON_INSTALL=${NO_TEST_ON_INSTALL}:"
+    echo "  Skipping smoke test of tensorflow install in clean virtualenv"
+    return ${SKIP_RETURN_CODE}
+  fi
+
   CLEAN_VENV_DIR="${PIP_TEST_ROOT}/venv_clean"
   create_activate_virtualenv_and_install_tensorflow --clean \
     "${CLEAN_VENV_DIR}" "${WHL_PATH}"
@@ -344,7 +354,7 @@ do_virtualenv_pip_test() {
   # Create virtualenv directory for install test
   VENV_DIR="${PIP_TEST_ROOT}/venv"
   create_activate_virtualenv_and_install_tensorflow \
-    "${CLEAN_VENV_DIR}" "${WHL_PATH}"
+    "${VENV_DIR}" "${WHL_PATH}"
 
   # Install extra pip packages required by the test-on-install
   for PACKAGE in ${INSTALL_EXTRA_PIP_PACKAGES}; do
@@ -361,6 +371,7 @@ do_virtualenv_pip_test() {
      [[ "${NO_TEST_ON_INSTALL}" != "0" ]]; then
     echo "NO_TEST_ON_INSTALL=${NO_TEST_ON_INSTALL}:"
     echo "  Skipping ALL Python unit tests on install"
+    return ${SKIP_RETURN_CODE}
   else
     # Call run_pip_tests.sh to perform test-on-install
     "${SCRIPT_DIR}/run_pip_tests.sh" --virtualenv ${GPU_FLAG} ${MAC_FLAG}
@@ -379,6 +390,7 @@ do_virtualenv_oss_serial_pip_test() {
      [[ "${NO_TEST_ON_INSTALL}" != "0" ]]; then
     echo "NO_TEST_ON_INSTALL=${NO_TEST_ON_INSTALL}:"
     echo "  Skipping Python unit tests on install tagged with oss_serial"
+    return ${SKIP_RETURN_CODE}
   else
     # Call run_pip_tests.sh to perform test-on-install
     "${SCRIPT_DIR}/run_pip_tests.sh" \
@@ -402,6 +414,7 @@ do_test_user_ops() {
     fi
   else
     echo "Skipping user-op test-on-install due to DO_TEST_USER_OPS = ${DO_TEST_USER_OPS}"
+    return ${SKIP_RETURN_CODE}
   fi
 }
 
@@ -424,6 +437,7 @@ do_test_tfdbg_binaries() {
     popd
   else
     echo "Skipping test of tfdbg binaries due to DO_TEST_TFDBG_BINARIES = ${DO_TEST_TFDBG_BINARIES}"
+    return ${SKIP_RETURN_CODE}
   fi
 }
 
@@ -439,6 +453,7 @@ do_test_tutorials() {
     fi
   else
     echo "Skipping tutorial tests-on-install due to DO_TEST_TUTORIALS = ${DO_TEST_TUTORIALS}"
+    return ${SKIP_RETURN_CODE}
   fi
 }
 
@@ -455,6 +470,7 @@ do_ffmpeg_integration_test() {
     fi
   else
     echo "Skipping ffmpeg integration due to DO_INTEGRATION_TESTS = ${DO_INTEGRATION_TESTS}"
+    return ${SKIP_RETURN_CODE}
   fi
 }
 
@@ -468,19 +484,22 @@ PIP_TASKS_DESC=("Smoke test of pip install in clean virtualenv" "PIP tests in vi
 COUNTER=0
 FAIL_COUNTER=0
 PASS_COUNTER=0
+SKIP_COUNTER=0
 while [[ ${COUNTER} -lt "${#PIP_TASKS[@]}" ]]; do
   INDEX=COUNTER
   ((INDEX++))
 
-  echo ""
-  echo "=== PIP test step ${INDEX} of ${#PIP_TASKS[@]}: "\
-"${PIP_TASKS[COUNTER]} (${PIP_TASKS_DESC[COUNTER]}) ==="
-  echo ""
+  echo
+  printf "${COLOR_BOLD}=== PIP test step ${INDEX} of ${#PIP_TASKS[@]}: "\
+"${PIP_TASKS[COUNTER]} (${PIP_TASKS_DESC[COUNTER]}) ===${COLOR_NC}"
+  echo
 
   ${PIP_TASKS[COUNTER]}
   RESULT=$?
 
-  if [[ ${RESULT} != "0" ]]; then
+  if [[ ${RESULT} == ${SKIP_RETURN_CODE} ]]; then
+    ((SKIP_COUNTER++))
+  elif [[ ${RESULT} != "0" ]]; then
     ((FAIL_COUNTER++))
   else
     ((PASS_COUNTER++))
@@ -503,7 +522,9 @@ while [[ ${COUNTER} -lt "${#PIP_TASKS[@]}" ]]; do
   ((INDEX++))
 
   echo "${INDEX}. ${PIP_TASKS[COUNTER]}: ${PIP_TASKS_DESC[COUNTER]}"
-  if [[ ${STEP_EXIT_CODES[COUNTER]} == "0" ]]; then
+  if [[ ${STEP_EXIT_CODES[COUNTER]} == ${SKIP_RETURN_CODE} ]]; then
+    printf "  ${COLOR_LIGHT_GRAY}SKIP${COLOR_NC}\n"
+  elif [[ ${STEP_EXIT_CODES[COUNTER]} == "0" ]]; then
     printf "  ${COLOR_GREEN}PASS${COLOR_NC}\n"
   else
     printf "  ${COLOR_RED}FAIL${COLOR_NC}\n"
@@ -513,7 +534,7 @@ while [[ ${COUNTER} -lt "${#PIP_TASKS[@]}" ]]; do
 done
 
 echo
-echo "${FAIL_COUNTER} failed; ${PASS_COUNTER} passed."
+echo "${SKIP_COUNTER} skipped; ${FAIL_COUNTER} failed; ${PASS_COUNTER} passed."
 
 echo
 if [[ ${FAIL_COUNTER} == "0" ]]; then

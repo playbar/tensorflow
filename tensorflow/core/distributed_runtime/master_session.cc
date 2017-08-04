@@ -28,7 +28,6 @@ limitations under the License.
 #include "tensorflow/core/distributed_runtime/worker_interface.h"
 #include "tensorflow/core/framework/allocation_description.pb.h"
 #include "tensorflow/core/framework/cost_graph.pb.h"
-#include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -76,7 +75,7 @@ class MasterSession::ReffedClientGraph : public core::RefCounted {
         debug_opts_(bopts.debug_options),
         worker_cache_(worker_cache) {
     VLOG(1) << "Created ReffedClientGraph for node with "
-            << client_graph_->graph.num_node_ids();
+            << client_graph()->graph.num_node_ids();
 
     stats_publisher_ = stats_publisher_factory(handle, bopts, session_opts);
 
@@ -166,8 +165,7 @@ class MasterSession::ReffedClientGraph : public core::RefCounted {
 
   // Partitions the graph into subgraphs and registers them on
   // workers.
-  Status RegisterPartitions(const PartitionOptions& popts,
-                            const FunctionLibraryDefinition& flib_def);
+  Status RegisterPartitions(const PartitionOptions& popts);
 
   // Runs one step of all partitions.
   Status RunPartitions(const MasterEnv* env, int64 step_id,
@@ -263,7 +261,7 @@ class MasterSession::ReffedClientGraph : public core::RefCounted {
       PartitionOptions pots,
       std::unordered_map<string, GraphDef>* out_partitions);
   Status DoRegisterPartitions(
-      const PartitionOptions& popts, const FunctionDefLibrary& func_def_lib,
+      const PartitionOptions& popts,
       std::unordered_map<string, GraphDef> graph_partitions);
 
   // Deregisters the partitions on the workers.  Called in the
@@ -274,7 +272,7 @@ class MasterSession::ReffedClientGraph : public core::RefCounted {
 };
 
 Status MasterSession::ReffedClientGraph::RegisterPartitions(
-    const PartitionOptions& popts, const FunctionLibraryDefinition& flib_def) {
+    const PartitionOptions& popts) {
   {  // Ensure register once.
     mu_.lock();
     if (!init_started_) {
@@ -293,8 +291,7 @@ Status MasterSession::ReffedClientGraph::RegisterPartitions(
           graph_defs_for_publishing.push_back(&name_def.second);
         }
         stats_publisher_->PublishGraphProto(graph_defs_for_publishing);
-        s = DoRegisterPartitions(popts, flib_def.ToProto(),
-                                 std::move(graph_defs));
+        s = DoRegisterPartitions(popts, std::move(graph_defs));
       }
       mu_.lock();
       init_result_ = s;
@@ -374,7 +371,7 @@ Status MasterSession::ReffedClientGraph::DoBuildPartitions(
 }
 
 Status MasterSession::ReffedClientGraph::DoRegisterPartitions(
-    const PartitionOptions& popts, const FunctionDefLibrary& func_def_lib,
+    const PartitionOptions& popts,
     std::unordered_map<string, GraphDef> graph_partitions) {
   partitions_.reserve(graph_partitions.size());
   Status s;
@@ -408,8 +405,6 @@ Status MasterSession::ReffedClientGraph::DoRegisterPartitions(
     Call* c = &calls[i];
     c->req.set_session_handle(session_handle_);
     c->req.mutable_graph_def()->Swap(&graph_partitions[part.name]);
-    // For simplicity, we ship the library completely to every worker.
-    *c->req.mutable_graph_def()->mutable_library() = func_def_lib;
     *c->req.mutable_graph_options() = session_opts_.config.graph_options();
     *c->req.mutable_debug_options() = debug_opts_;
     VLOG(2) << "Register " << c->req.graph_def().DebugString();
@@ -1022,6 +1017,11 @@ void MasterSession::UpdateLastAccessTime() {
 
 Status MasterSession::Create(GraphDef* graph_def,
                              const WorkerCacheFactoryOptions& options) {
+  if (session_opts_.config.use_per_session_threads() ||
+      session_opts_.config.session_inter_op_thread_pool_size() > 0) {
+    return errors::InvalidArgument(
+        "Distributed session does not support session thread pool options.");
+  }
   if (session_opts_.config.graph_options().place_pruned_graph()) {
     // TODO(b/29900832): Fix this or remove the option.
     LOG(WARNING) << "Distributed session does not support the "
@@ -1305,6 +1305,7 @@ Status MasterSession::BuildAndRegisterPartitions(ReffedClientGraph* rcg) {
     mutex_lock l(mu_);
     return strings::StrCat(prefix, "_S", next_node_id_++);
   };
+  popts.flib_def = rcg->client_graph()->flib_def.get();
   popts.get_incarnation = [this](const string& name) -> int64 {
     Device* d = devices_->FindDeviceByName(name);
     if (d == nullptr) {
@@ -1332,8 +1333,7 @@ Status MasterSession::BuildAndRegisterPartitions(ReffedClientGraph* rcg) {
     popts.need_to_record_start_times = true;
   }
 
-  TF_RETURN_IF_ERROR(
-      rcg->RegisterPartitions(popts, *rcg->client_graph()->flib_def));
+  TF_RETURN_IF_ERROR(rcg->RegisterPartitions(popts));
 
   return Status::OK();
 }
