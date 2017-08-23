@@ -86,6 +86,7 @@ __all__ = ['avg_pool2d',
            'separable_conv2d',
            'separable_convolution2d',
            'softmax',
+           'spatial_softmax',
            'stack',
            'unit_norm',
            'legacy_fully_connected',
@@ -1944,7 +1945,7 @@ def gdn(inputs,
   spatial dimensions. It is similar to local response normalization, but much
   more flexible, as `beta` and `gamma` are trainable parameters.
 
-  Arguments:
+  Args:
     inputs: Tensor input.
     inverse: If `False` (default), compute GDN response. If `True`, compute IGDN
       response (one step of fixed point iteration to invert GDN; the division
@@ -2427,6 +2428,7 @@ def separable_convolution2d(
     depth_multiplier,
     stride=1,
     padding='SAME',
+    data_format=DATA_FORMAT_NHWC,
     rate=1,
     activation_fn=nn.relu,
     normalizer_fn=None,
@@ -2462,6 +2464,7 @@ def separable_convolution2d(
     stride: A list of length 2: [stride_height, stride_width], specifying the
       depthwise convolution stride. Can be an int if both strides are the same.
     padding: One of 'VALID' or 'SAME'.
+    data_format: A string. `NHWC` (default) and `NCHW` are supported.
     rate: A list of length 2: [rate_height, rate_width], specifying the dilation
       rates for atrous convolution. Can be an int if both rates are the same.
       If any value is larger than one, then both stride values need to be one.
@@ -2486,7 +2489,11 @@ def separable_convolution2d(
 
   Returns:
     A `Tensor` representing the output of the operation.
+  Raises:
+    ValueError: If `data_format` is invalid.
   """
+  if data_format not in (DATA_FORMAT_NCHW, DATA_FORMAT_NHWC):
+    raise ValueError('data_format has to be either NCHW or NHWC.')
   layer_variable_getter = _build_variable_getter(
       {'bias': 'biases',
        'depthwise_kernel': 'depthwise_weights',
@@ -2497,6 +2504,8 @@ def separable_convolution2d(
       custom_getter=layer_variable_getter) as sc:
     inputs = ops.convert_to_tensor(inputs)
 
+    df = ('channels_first' if data_format and data_format.startswith('NC')
+          else 'channels_last')
     if num_outputs is not None:
       # Apply separable conv using the SeparableConvolution2D layer.
       layer = convolutional_layers.SeparableConvolution2D(
@@ -2504,7 +2513,7 @@ def separable_convolution2d(
           kernel_size=kernel_size,
           strides=stride,
           padding=padding,
-          data_format='channels_last',
+          data_format=df,
           dilation_rate=utils.two_element_tuple(rate),
           activation=None,
           depth_multiplier=depth_multiplier,
@@ -2540,7 +2549,8 @@ def separable_convolution2d(
       dtype = inputs.dtype.base_dtype
       kernel_h, kernel_w = utils.two_element_tuple(kernel_size)
       stride_h, stride_w = utils.two_element_tuple(stride)
-      num_filters_in = utils.last_dimension(inputs.get_shape(), min_rank=4)
+      num_filters_in = utils.channel_dimension(
+          inputs.get_shape(), df, min_rank=4)
       weights_collections = utils.get_variable_collections(
           variables_collections, 'weights')
 
@@ -2557,7 +2567,8 @@ def separable_convolution2d(
       strides = [1, stride_h, stride_w, 1]
 
       outputs = nn.depthwise_conv2d(inputs, depthwise_weights, strides, padding,
-                                    rate=utils.two_element_tuple(rate))
+                                    rate=utils.two_element_tuple(rate),
+                                    data_format=data_format)
       num_outputs = depth_multiplier * num_filters_in
 
       if normalizer_fn is not None:
@@ -2574,7 +2585,7 @@ def separable_convolution2d(
                                             regularizer=biases_regularizer,
                                             trainable=trainable,
                                             collections=biases_collections)
-          outputs = nn.bias_add(outputs, biases)
+          outputs = nn.bias_add(outputs, biases, data_format=data_format)
 
     if activation_fn is not None:
       outputs = activation_fn(outputs)
@@ -2604,6 +2615,83 @@ def softmax(logits, scope=None):
     predictions = array_ops.reshape(predictions, array_ops.shape(logits))
     predictions.set_shape(logits.get_shape())
     return predictions
+
+
+@add_arg_scope
+def spatial_softmax(features,
+                    temperature=None,
+                    name=None,
+                    variables_collections=None,
+                    trainable=True,
+                    data_format='NHWC'):
+  """Computes the spatial softmax of a convolutional feature map.
+
+  First computes the softmax over the spatial extent of each channel of a
+  convolutional feature map. Then computes the expected 2D position of the
+  points of maximal activation for each channel, resulting in a set of
+  feature keypoints [x1, y1, ... xN, yN] for all N channels.
+
+  Read more here:
+  "Learning visual feature spaces for robotic manipulation with
+  deep spatial autoencoders." Finn et. al, http://arxiv.org/abs/1509.06113.
+
+  Args:
+    features: A `Tensor` of size [batch_size, W, H, num_channels]; the
+      convolutional feature map.
+    temperature: Softmax temperature (optional). If None, a learnable
+      temperature is created.
+    name: A name for this operation (optional).
+    variables_collections: Collections for the temperature variable.
+    trainable: If `True` also add variables to the graph collection
+      `GraphKeys.TRAINABLE_VARIABLES` (see `tf.Variable`).
+    data_format: A string. `NHWC` (default) and `NCHW` are supported.
+  Returns:
+    feature_keypoints: A `Tensor` with size [batch_size, num_channels * 2];
+      the expected 2D locations of each channel's feature keypoint (normalized
+      to the range (-1,1)). The inner dimension is arranged as
+      [x1, y1, ... xN, yN].
+  Raises:
+    ValueError: If unexpected data_format specified.
+  """
+  shape = array_ops.shape(features)
+  if data_format == DATA_FORMAT_NHWC:
+    height, width, num_channels = shape[1], shape[2], shape[3]
+  elif data_format == DATA_FORMAT_NCHW:
+    num_channels, height, width = shape[1], shape[2], shape[3]
+  else:
+    raise ValueError('data_format has to be either NCHW or NHWC.')
+
+  with ops.name_scope(name, 'spatial_softmax', [features]) as name:
+    # Create tensors for x and y coordinate values, scaled to range [-1, 1].
+    pos_x, pos_y = array_ops.meshgrid(math_ops.lin_space(-1., 1., num=height),
+                                      math_ops.lin_space(-1., 1., num=width),
+                                      indexing='ij')
+    pos_x = array_ops.reshape(pos_x, [height * width])
+    pos_y = array_ops.reshape(pos_y, [height * width])
+    if temperature is None:
+      temperature_collections = utils.get_variable_collections(
+          variables_collections, 'temperature')
+      temperature = variables.model_variable(
+          'temperature',
+          shape=(),
+          dtype=dtypes.float32,
+          initializer=init_ops.ones_initializer(),
+          collections=temperature_collections,
+          trainable=trainable)
+    if data_format == 'NCHW':
+      features = array_ops.reshape(features, [-1, height * width])
+    else:
+      features = array_ops.reshape(
+          array_ops.transpose(features, [0, 3, 1, 2]), [-1, height * width])
+
+    softmax_attention = nn.softmax(features/temperature)
+    expected_x = math_ops.reduce_sum(
+        pos_x * softmax_attention, [1], keep_dims=True)
+    expected_y = math_ops.reduce_sum(
+        pos_y * softmax_attention, [1], keep_dims=True)
+    expected_xy = array_ops.concat([expected_x, expected_y], 1)
+    feature_keypoints = array_ops.reshape(expected_xy, [-1, num_channels * 2])
+    return feature_keypoints
 
 
 def stack(inputs, layer, stack_args, **kwargs):
