@@ -19,6 +19,9 @@ from __future__ import print_function
 import re
 
 from tensorflow.contrib.boosted_trees.python.ops import batch_ops_utils
+# pylint: disable=unused-import
+from tensorflow.contrib.boosted_trees.python.ops import boosted_trees_ops_loader
+# pylint: enable=unused-import
 from tensorflow.contrib.boosted_trees.python.ops import gen_quantile_ops
 
 # go/tf-wildcard-import
@@ -26,12 +29,9 @@ from tensorflow.contrib.boosted_trees.python.ops import gen_quantile_ops
 from tensorflow.contrib.boosted_trees.python.ops.gen_quantile_ops import *
 # pylint: enable=wildcard-import,undefined-variable
 
-from tensorflow.contrib.util import loader
-from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.ops import resources
-from tensorflow.python.platform import resource_loader
 from tensorflow.python.training import saver
 
 # Pattern to remove all non alpha numeric from a string.
@@ -45,6 +45,7 @@ class QuantileAccumulator(saver.BaseSaverBuilder.SaveableObject):
                init_stamp_token,
                epsilon,
                num_quantiles,
+               max_elements=None,
                name=None,
                container=None):
     """Creates a QuantileAccumulator object.
@@ -53,6 +54,7 @@ class QuantileAccumulator(saver.BaseSaverBuilder.SaveableObject):
       init_stamp_token: The initial value for the stamp token.
       epsilon: Error bound on the quantile computation.
       num_quantiles: Number of quantiles to produce from the final summary.
+      max_elements: Maximum number of elements added to the accumulator.
       name: the name to save the accumulator under.
       container: An optional `string`. Defaults to `""`
     """
@@ -67,6 +69,7 @@ class QuantileAccumulator(saver.BaseSaverBuilder.SaveableObject):
           self._quantile_accumulator_handle,
           init_stamp_token,
           epsilon=epsilon,
+          max_elements=max_elements,
           num_quantiles=num_quantiles)
       is_initialized_op = gen_quantile_ops.quantile_accumulator_is_initialized(
           self._quantile_accumulator_handle)
@@ -186,11 +189,3 @@ class QuantileAccumulator(saver.BaseSaverBuilder.SaveableObject):
         stamp_token=stamp_token,
         next_stamp_token=next_stamp_token)
     return result
-
-
-# Conditionally load ops, they might already be statically linked in.
-try:
-  _quantile_ops = loader.load_op_library(
-      resource_loader.get_path_to_datafile("_quantile_ops.so"))
-except (errors.NotFoundError, IOError):
-  print("Error loading _quantile_ops.so")

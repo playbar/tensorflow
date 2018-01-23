@@ -6,11 +6,13 @@ package(
 
 licenses(["notice"])  # Apache 2.0
 
+load("//tensorflow:tensorflow.bzl", "tf_cc_test")
+
 cc_library(
     name = "batch_scheduler_hdrs",
     hdrs = ["batch_scheduler.h"],
     deps = [
-        "//tensorflow/core:framework_headers_lib",
+        "//tensorflow/core/kernels/batching_util:batch_scheduler_hdrs",
     ],
 )
 
@@ -18,19 +20,7 @@ cc_library(
     name = "batch_scheduler",
     hdrs = ["batch_scheduler.h"],
     deps = [
-        "//tensorflow/core:lib",
-    ],
-)
-
-cc_test(
-    name = "batch_scheduler_test",
-    size = "small",
-    srcs = ["batch_scheduler_test.cc"],
-    deps = [
-        ":batch_scheduler",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:test",
-        "//tensorflow/core:test_main",
+        "//tensorflow/core/kernels/batching_util:batch_scheduler",
     ],
 )
 
@@ -38,9 +28,7 @@ cc_library(
     name = "shared_batch_scheduler_hdrs",
     hdrs = ["shared_batch_scheduler.h"],
     deps = [
-        ":batch_scheduler_hdrs",
-        "//tensorflow/contrib/batching/util:periodic_function_dynamic",
-        "//tensorflow/core:framework_headers_lib",
+        "//tensorflow/core/kernels/batching_util:shared_batch_scheduler_hdrs",
     ],
 )
 
@@ -48,24 +36,16 @@ cc_library(
     name = "shared_batch_scheduler",
     hdrs = ["shared_batch_scheduler.h"],
     deps = [
-        ":batch_scheduler",
-        "//tensorflow/contrib/batching/util:periodic_function_dynamic",
-        "//tensorflow/core:lib",
+        "//tensorflow/core/kernels/batching_util:shared_batch_scheduler",
     ],
     alwayslink = 1,
 )
 
-cc_test(
-    name = "shared_batch_scheduler_test",
-    size = "small",
-    srcs = ["shared_batch_scheduler_test.cc"],
+cc_library(
+    name = "adaptive_shared_batch_scheduler",
+    hdrs = ["adaptive_shared_batch_scheduler.h"],
     deps = [
-        ":shared_batch_scheduler",
-        "//tensorflow/contrib/batching/test_util:fake_clock_env",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:protos_all_cc",
-        "//tensorflow/core:test",
-        "//tensorflow/core:test_main",
+        "//tensorflow/core/kernels/batching_util:adaptive_shared_batch_scheduler",
     ],
 )
 
@@ -73,35 +53,7 @@ cc_library(
     name = "basic_batch_scheduler",
     hdrs = ["basic_batch_scheduler.h"],
     deps = [
-        ":shared_batch_scheduler",
-    ],
-)
-
-cc_test(
-    name = "basic_batch_scheduler_test",
-    size = "small",
-    srcs = ["basic_batch_scheduler_test.cc"],
-    deps = [
-        ":basic_batch_scheduler",
-        ":batch_scheduler",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:test",
-        "//tensorflow/core:test_main",
-    ],
-)
-
-cc_test(
-    name = "basic_batch_scheduler_benchmark",
-    srcs = ["basic_batch_scheduler_benchmark.cc"],
-    tags = [
-        "local",
-        "manual",
-    ],
-    deps = [
-        ":basic_batch_scheduler",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:tensorflow",
-        "//tensorflow/core:test",
+        "//tensorflow/core/kernels/batching_util:basic_batch_scheduler",
     ],
 )
 
@@ -156,14 +108,13 @@ tf_custom_op_py_library(
     deps = [
         ":batch_ops",
         "//tensorflow/contrib/util:util_py",
+        "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
-        "//tensorflow/python:errors",
         "//tensorflow/python:framework_for_generated_wrappers",
-        "//tensorflow/python:math_ops",
+        "//tensorflow/python:gradients",
         "//tensorflow/python:platform",
-        "//tensorflow/python:state_ops",
-        "//tensorflow/python:variable_scope",
-        "//tensorflow/python:variables",
+        "//tensorflow/python:script_ops",
+        "//tensorflow/python:util",
     ],
 )
 

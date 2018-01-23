@@ -35,7 +35,7 @@ import collections as _collections
 
 import six as _six
 
-from tensorflow.python.platform import tf_logging as _tf_logging
+from tensorflow.python import pywrap_tensorflow as _pywrap_tensorflow
 from tensorflow.python.util.all_util import remove_undocumented
 
 
@@ -45,6 +45,15 @@ def _sorted(dict_):
     return sorted(_six.iterkeys(dict_))
   except TypeError:
     raise TypeError("nest only supports dicts with sortable keys.")
+
+
+def _is_namedtuple(instance):
+  """Returns True iff `instance` is a `namedtuple`."""
+  return (
+      isinstance(instance, tuple) and
+      hasattr(instance, "_fields") and
+      isinstance(instance._fields, _collections.Sequence) and
+      all(isinstance(f, _six.string_types) for f in instance._fields))
 
 
 def _sequence_like(instance, args):
@@ -66,11 +75,7 @@ def _sequence_like(instance, args):
     # corresponding `OrderedDict` to pack it back).
     result = dict(zip(_sorted(instance), args))
     return type(instance)((key, result[key]) for key in _six.iterkeys(instance))
-  elif (isinstance(instance, tuple) and
-        hasattr(instance, "_fields") and
-        isinstance(instance._fields, _collections.Sequence) and
-        all(isinstance(f, _six.string_types) for f in instance._fields)):
-    # This is a namedtuple
+  elif _is_namedtuple(instance):
     return type(instance)(*args)
   else:
     # Not a namedtuple
@@ -91,26 +96,6 @@ def _yield_value(iterable):
       yield value
 
 
-def _yield_flat_nest(nest):
-  for n in _yield_value(nest):
-    if is_sequence(n):
-      for ni in _yield_flat_nest(n):
-        yield ni
-    else:
-      yield n
-
-
-# Used by `_warn_once` to remember which warning messages have been given.
-_ALREADY_WARNED = {}
-
-
-def _warn_once(message):
-  """Logs a warning message, once per unique string."""
-  if message not in _ALREADY_WARNED:
-    _ALREADY_WARNED[message] = True
-    _tf_logging.warning(message)
-
-
 def is_sequence(seq):
   """Returns a true if its input is a collections.Sequence (except strings).
 
@@ -121,13 +106,7 @@ def is_sequence(seq):
     True if the sequence is a not a string and is a collections.Sequence or a
     dict.
   """
-  if isinstance(seq, dict):
-    return True
-  if isinstance(seq, set):
-    _warn_once("Sets are not currently considered sequences, but this may "
-               "change in the future, so consider avoiding using them.")
-  return (isinstance(seq, _collections.Sequence)
-          and not isinstance(seq, _six.string_types))
+  return _pywrap_tensorflow.IsSequence(seq)
 
 
 def flatten(nest):
@@ -142,8 +121,11 @@ def flatten(nest):
   used instead. The same convention is followed in `pack_sequence_as`. This
   correctly repacks dicts and `OrderedDict`s after they have been flattened,
   and also allows flattening an `OrderedDict` and then repacking it back using
-  a correponding plain dict, or vice-versa.
+  a corresponding plain dict, or vice-versa.
   Dictionaries with non-sortable keys cannot be flattened.
+
+  Users must not modify any collections used in `nest` while this function is
+  running.
 
   Args:
     nest: an arbitrarily nested structure or a scalar object. Note, numpy
@@ -155,10 +137,7 @@ def flatten(nest):
   Raises:
     TypeError: The nest is or contains a dict with non-sortable keys.
   """
-  if is_sequence(nest):
-    return list(_yield_flat_nest(nest))
-  else:
-    return [nest]
+  return _pywrap_tensorflow.Flatten(nest)
 
 
 def _recursive_assert_same_structure(nest1, nest2, check_types):
@@ -319,10 +298,10 @@ def pack_sequence_as(structure, flat_sequence):
   If `structure` is or contains a dict instance, the keys will be sorted to
   pack the flat sequence in deterministic order. This is true also for
   `OrderedDict` instances: their sequence order is ignored, the sorting order of
-  keys is used instead. The same convention is followed in `pack_sequence_as`.
+  keys is used instead. The same convention is followed in `flatten`.
   This correctly repacks dicts and `OrderedDict`s after they have been
   flattened, and also allows flattening an `OrderedDict` and then repacking it
-  back using a correponding plain dict, or vice-versa.
+  back using a corresponding plain dict, or vice-versa.
   Dictionaries with non-sortable keys cannot be flattened.
 
   Args:
@@ -478,6 +457,17 @@ def assert_shallow_structure(shallow_tree, input_tree, check_types=True):
           "structure has length %s, while shallow structure has length %s."
           % (len(input_tree), len(shallow_tree)))
 
+    if check_types and isinstance(shallow_tree, dict):
+      if set(input_tree) != set(shallow_tree):
+        raise ValueError(
+            "The two structures don't have the same keys. Input "
+            "structure has keys %s, while shallow structure has keys %s." %
+            (list(_six.iterkeys(input_tree)),
+             list(_six.iterkeys(shallow_tree))))
+
+      input_tree = list(_six.iteritems(input_tree))
+      shallow_tree = list(_six.iteritems(shallow_tree))
+
     for shallow_branch, input_branch in zip(shallow_tree, input_tree):
       assert_shallow_structure(shallow_branch, input_branch,
                                check_types=check_types)
@@ -630,6 +620,150 @@ def map_structure_up_to(shallow_tree, func, *inputs):
   return pack_sequence_as(structure=shallow_tree, flat_sequence=results)
 
 
+def get_traverse_shallow_structure(traverse_fn, structure):
+  """Generates a shallow structure from a `traverse_fn` and `structure`.
+
+  `traverse_fn` must accept any possible subtree of `structure` and return
+  a depth=1 structure containing `True` or `False` values, describing which
+  of the top-level subtrees may be traversed.  It may also
+  return scalar `True` or `False` "traversal is OK / not OK for all subtrees."
+
+  Examples are available in the unit tests (nest_test.py).
+
+  Args:
+    traverse_fn: Function taking a substructure and returning either a scalar
+      `bool` (whether to traverse that substructure or not) or a depth=1
+      shallow structure of the same type, describing which parts of the
+      substructure to traverse.
+    structure: The structure to traverse.
+
+  Returns:
+    A shallow structure containing python bools, which can be passed to
+    `map_structure_up_to` and `flatten_up_to`.
+
+  Raises:
+    TypeError: if `traverse_fn` returns a sequence for a non-sequence input,
+      or a structure with depth higher than 1 for a sequence input,
+      or if any leaf values in the returned structure or scalar are not type
+      `bool`.
+  """
+  to_traverse = traverse_fn(structure)
+  if not is_sequence(structure):
+    if not isinstance(to_traverse, bool):
+      raise TypeError("traverse_fn returned structure: %s for non-structure: %s"
+                      % (to_traverse, structure))
+    return to_traverse
+  level_traverse = []
+  if isinstance(to_traverse, bool):
+    if not to_traverse:
+      # Do not traverse this substructure at all.  Exit early.
+      return False
+    else:
+      # Traverse the entire substructure.
+      for branch in _yield_value(structure):
+        level_traverse.append(
+            get_traverse_shallow_structure(traverse_fn, branch))
+  elif not is_sequence(to_traverse):
+    raise TypeError("traverse_fn returned a non-bool scalar: %s for input: %s"
+                    % (to_traverse, structure))
+  else:
+    # Traverse some subset of this substructure.
+    assert_shallow_structure(to_traverse, structure)
+    for t, branch in zip(_yield_value(to_traverse), _yield_value(structure)):
+      if not isinstance(t, bool):
+        raise TypeError(
+            "traverse_fn didn't return a depth=1 structure of bools.  saw: %s "
+            " for structure: %s" % (to_traverse, structure))
+      if t:
+        level_traverse.append(
+            get_traverse_shallow_structure(traverse_fn, branch))
+      else:
+        level_traverse.append(False)
+  return _sequence_like(structure, level_traverse)
+
+
+def yield_flat_paths(nest):
+  """Yields paths for some nested structure.
+
+  Paths are lists of objects which can be str-converted, which may include
+  integers or other types which are used as indices in a dict.
+
+  The flat list will be in the corresponding order as if you called
+  `snt.nest.flatten` on the structure. This is handy for naming Tensors such
+  the TF scope structure matches the tuple structure.
+
+  E.g. if we have a tuple `value = Foo(a=3, b=Bar(c=23, d=42))`
+
+  ```shell
+  >>> nest.flatten(value)
+  [3, 23, 42]
+  >>> list(nest.yield_flat_paths(value))
+  [('a',), ('b', 'c'), ('b', 'd')]
+  ```
+
+  ```shell
+  >>> list(nest.yield_flat_paths({'a': [3]}))
+  [('a', 0)]
+  >>> list(nest.yield_flat_paths({'a': 3}))
+  [('a',)]
+  ```
+
+  Args:
+    nest: the value to produce a flattened paths list for.
+
+  Yields:
+    Tuples containing index or key values which form the path to a specific
+      leaf value in the nested structure.
+  """
+
+  # The _maybe_add_final_path_element function is used below in order to avoid
+  # adding trailing slashes when the sub-element recursed into is a leaf.
+  if isinstance(nest, dict):
+    for key in _sorted(nest):
+      value = nest[key]
+      for sub_path in yield_flat_paths(value):
+        yield (key,) + sub_path
+  elif _is_namedtuple(nest):
+    for key in nest._fields:
+      value = getattr(nest, key)
+      for sub_path in yield_flat_paths(value):
+        yield (key,) + sub_path
+  elif isinstance(nest, _six.string_types):
+    yield ()
+  elif isinstance(nest, _collections.Sequence):
+    for idx, value in enumerate(nest):
+      for sub_path in yield_flat_paths(value):
+        yield (idx,) + sub_path
+  else:
+    yield ()
+
+
+def flatten_with_joined_string_paths(structure, separator="/"):
+  """Returns a list of (string path, data element) tuples.
+
+  The order of tuples produced matches that of `nest.flatten`. This allows you
+  to flatten a nested structure while keeping information about where in the
+  structure each data element was located. See `nest.yield_flat_paths`
+  for more information.
+
+  Args:
+    structure: the nested structure to flatten.
+    separator: string to separate levels of hierarchy in the results, defaults
+      to '/'.
+
+  Returns:
+    A list of (string, data element) tuples.
+  """
+  flat_paths = yield_flat_paths(structure)
+  def stringify_and_join(path_elements):
+    return separator.join(str(path_element) for path_element in path_elements)
+  flat_string_paths = [stringify_and_join(path) for path in flat_paths]
+  return list(zip(flat_string_paths, flatten(structure)))
+
+
+_pywrap_tensorflow.RegisterSequenceClass(_collections.Sequence)
+
+
 _allowed_symbols = [
     "assert_same_structure",
     "is_sequence",
@@ -640,6 +774,9 @@ _allowed_symbols = [
     "assert_shallow_structure",
     "flatten_up_to",
     "map_structure_up_to",
+    "get_traverse_shallow_structure",
+    "yield_flat_paths",
+    "flatten_with_joined_string_paths",
 ]
 
 remove_undocumented(__name__, _allowed_symbols)

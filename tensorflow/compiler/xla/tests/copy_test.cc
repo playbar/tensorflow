@@ -40,7 +40,7 @@ class CopyOpTest : public HloTestBase {
   void TestCopyOp(const Literal& literal) {
     auto builder = HloComputation::Builder(TestName());
     auto constant = builder.AddInstruction(
-        HloInstruction::CreateConstant(MakeUnique<Literal>(literal)));
+        HloInstruction::CreateConstant(literal.CloneToUnique()));
     builder.AddInstruction(HloInstruction::CreateUnary(
         constant->shape(), HloOpcode::kCopy, constant));
     auto computation = builder.Build();
@@ -56,36 +56,39 @@ class CopyOpTest : public HloTestBase {
                                 tensorflow::gtl::ArraySlice<int64> permutation);
 };
 
-TEST_F(CopyOpTest, CopyR0Bool) { TestCopyOp(*Literal::CreateR0<bool>(true)); }
+XLA_TEST_F(CopyOpTest, CopyR0Bool) {
+  TestCopyOp(*Literal::CreateR0<bool>(true));
+}
 
-TEST_F(CopyOpTest, CopyR1S0U32) { TestCopyOp(*Literal::CreateR1<uint32>({})); }
+XLA_TEST_F(CopyOpTest, CopyR1S0U32) {
+  TestCopyOp(*Literal::CreateR1<uint32>({}));
+}
 
-TEST_F(CopyOpTest, CopyR1S3U32) {
+XLA_TEST_F(CopyOpTest, CopyR1S3U32) {
   TestCopyOp(*Literal::CreateR1<uint32>({1, 2, 3}));
 }
 
-TEST_F(CopyOpTest, CopyR3F32_2x2x3) {
+XLA_TEST_F(CopyOpTest, CopyR3F32_2x2x3) {
   TestCopyOp(*Literal::CreateR3({{{1.0f, 2.0f, 3.0f}, {4.0f, 5.0f, 6.0f}},
                                  {{1.1f, 2.1f, 3.1f}, {6.1f, 3.5f, 2.8f}}}));
 }
 
-TEST_F(CopyOpTest, CopyR4S32_2x2x3x2) {
+XLA_TEST_F(CopyOpTest, CopyR4S32_2x2x3x2) {
   TestCopyOp(*Literal::CreateR4(
       {{{{1, -2}, {-4, 5}, {6, 7}}, {{8, 9}, {10, 11}, {12, 13}}},
        {{{10, 3}, {7, -2}, {3, 6}}, {{2, 5}, {-11, 5}, {-2, -5}}}}));
 }
 
-TEST_F(CopyOpTest, CopyR4S32_0x2x3x2) {
+XLA_TEST_F(CopyOpTest, CopyR4S32_0x2x3x2) {
   TestCopyOp(*Literal::CreateR4FromArray4D(Array4D<int32>(0, 2, 3, 2)));
 }
 
-TEST_F(CopyOpTest, CopyParameterScalar) {
+XLA_TEST_F(CopyOpTest, CopyParameterScalar) {
   auto builder = HloComputation::Builder(TestName());
 
   // Copy literal to device to use as parameter.
   auto literal = Literal::CreateR0<float>(42.0);
   Shape shape = literal->shape();
-  auto constant_device_base = TransferToDevice(*literal);
 
   auto param0 = builder.AddInstruction(
       HloInstruction::CreateParameter(0, shape, "param0"));
@@ -98,11 +101,11 @@ TEST_F(CopyOpTest, CopyParameterScalar) {
   module->AddEntryComputation(std::move(computation));
 
   std::unique_ptr<Literal> result =
-      ExecuteAndTransfer(std::move(module), {constant_device_base});
+      ExecuteAndTransfer(std::move(module), {literal.get()});
   LiteralTestUtil::ExpectR0Near<float>(42.0f, *result, error_spec_);
 }
 
-TEST_F(CopyOpTest, CopyConstantR2Twice) {
+XLA_TEST_F(CopyOpTest, CopyConstantR2Twice) {
   auto builder = HloComputation::Builder(TestName());
 
   auto literal = Literal::CreateR2<float>({{1.0, 2.0}, {3.0, 4.0}});
@@ -123,13 +126,14 @@ TEST_F(CopyOpTest, CopyConstantR2Twice) {
                                        error_spec_);
 }
 
-TEST_F(CopyOpTest, CopyConstantR2DifferentLayouts) {
+XLA_TEST_F(CopyOpTest, CopyConstantR2DifferentLayouts) {
   HloComputation::Builder builder(TestName());
 
   std::unique_ptr<Literal> literal =
       Literal::CreateR2<float>({{1.0, 2.0}, {3.0, 4.0}});
   // Reverse the minor-to-major order of the literal.
-  Layout* literal_layout = literal->mutable_shape()->mutable_layout();
+  Layout* literal_layout =
+      literal->mutable_shape_do_not_use()->mutable_layout();
   ASSERT_EQ(2, literal_layout->minor_to_major_size());
   literal_layout->mutable_minor_to_major()->SwapElements(0, 1);
 

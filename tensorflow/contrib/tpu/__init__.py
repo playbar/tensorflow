@@ -23,8 +23,8 @@
 
 @@initialize_system
 @@shutdown_system
+@@device_assignment
 @@core
-@@outside_all_rewrites
 @@replicate
 @@shard
 @@batch_parallel
@@ -34,8 +34,16 @@
 
 @@InfeedQueue
 
+@@DeviceAssignment
+@@Topology
+
 @@while_loop
 @@repeat
+
+@@TPUEstimator
+@@TPUEstimatorSpec
+@@RunConfig
+@@TPUConfig
 """
 
 from __future__ import absolute_import
@@ -45,7 +53,11 @@ from __future__ import print_function
 # pylint: disable=wildcard-import,unused-import
 from tensorflow.contrib.tpu.python import profiler
 from tensorflow.contrib.tpu.python.ops.tpu_ops import *
+from tensorflow.contrib.tpu.python.tpu.device_assignment import *
+from tensorflow.contrib.tpu.python.tpu.topology import *
 from tensorflow.contrib.tpu.python.tpu.tpu import *
+from tensorflow.contrib.tpu.python.tpu.tpu_config import *
+from tensorflow.contrib.tpu.python.tpu.tpu_estimator import *
 from tensorflow.contrib.tpu.python.tpu.tpu_feed import *
 from tensorflow.contrib.tpu.python.tpu.tpu_optimizer import *
 from tensorflow.contrib.tpu.python.tpu.training_loop import *
