@@ -37,13 +37,15 @@ from tensorflow.python.training import saver as saver_mod
 from tensorflow.python.training import session_manager as session_manager_mod
 from tensorflow.python.training import training_util
 from tensorflow.python.util import deprecation
+from tensorflow.python.util.tf_export import tf_export
 
 
+@tf_export("train.Supervisor")
 class Supervisor(object):
   """A training helper that checkpoints models and computes summaries.
 
   This class is deprecated. Please use
-  ${tf.train.MonitoredTrainingSession} instead.
+  @{tf.train.MonitoredTrainingSession} instead.
 
   The Supervisor is a small wrapper around a `Coordinator`, a `Saver`,
   and a `SessionManager` that takes care of common needs of TensorFlow

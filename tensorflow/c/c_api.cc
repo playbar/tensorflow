@@ -30,6 +30,7 @@ limitations under the License.
 #endif
 #include "tensorflow/c/c_api_internal.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
+#include "tensorflow/core/common_runtime/eval_const_tensor.h"
 #include "tensorflow/core/common_runtime/shape_refiner.h"
 #include "tensorflow/core/framework/allocation_description.pb.h"
 #include "tensorflow/core/framework/log_memory.h"
@@ -64,6 +65,7 @@ using tensorflow::AllocationDescription;
 using tensorflow::DataType;
 using tensorflow::Graph;
 using tensorflow::GraphDef;
+using tensorflow::mutex_lock;
 using tensorflow::NameRangeMap;
 using tensorflow::NameRangesForNode;
 using tensorflow::NewSession;
@@ -72,11 +74,13 @@ using tensorflow::NodeBuilder;
 using tensorflow::NodeDef;
 using tensorflow::OpDef;
 using tensorflow::OpRegistry;
+using tensorflow::OutputTensor;
 using tensorflow::PartialTensorShape;
 using tensorflow::RunMetadata;
 using tensorflow::RunOptions;
 using tensorflow::Session;
 using tensorflow::Status;
+using tensorflow::string;
 using tensorflow::Tensor;
 using tensorflow::TensorBuffer;
 using tensorflow::TensorId;
@@ -87,8 +91,6 @@ using tensorflow::error::Code;
 using tensorflow::errors::FailedPrecondition;
 using tensorflow::errors::InvalidArgument;
 using tensorflow::gtl::ArraySlice;
-using tensorflow::mutex_lock;
-using tensorflow::string;
 using tensorflow::strings::StrCat;
 
 extern "C" {
@@ -109,6 +111,10 @@ TF_Status* TF_NewStatus() { return new TF_Status; }
 void TF_DeleteStatus(TF_Status* s) { delete s; }
 
 void TF_SetStatus(TF_Status* s, TF_Code code, const char* msg) {
+  if (code == TF_OK) {
+    s->status = Status::OK();
+    return;
+  }
   s->status = Status(static_cast<Code>(code), tensorflow::StringPiece(msg));
 }
 
@@ -195,11 +201,11 @@ TF_Tensor* TF_NewTensor(TF_DataType dtype, const int64_t* dims, int num_dims,
       reinterpret_cast<intptr_t>(data) % EIGEN_MAX_ALIGN_BYTES != 0) {
     // TF_STRING and TF_RESOURCE tensors have a different representation in
     // TF_Tensor than they do in tensorflow::Tensor. So a copy here is a waste
-    // (any alignement requirements will be taken care of by TF_TensorToTensor
+    // (any alignment requirements will be taken care of by TF_TensorToTensor
     // and TF_TensorFromTensor).
     //
-    // Other types have the same represntation, so copy only if it is safe to do
-    // so.
+    // Other types have the same representation, so copy only if it is safe to
+    // do so.
     buf->data_ = allocate_tensor("TF_NewTensor", len);
     std::memcpy(buf->data_, data, len);
     buf->deallocator_ = deallocate_buffer;
@@ -211,7 +217,13 @@ TF_Tensor* TF_NewTensor(TF_DataType dtype, const int64_t* dims, int num_dims,
     buf->deallocator_ = deallocator;
     buf->deallocator_arg_ = deallocator_arg;
   }
-  return new TF_Tensor{dtype, TensorShape(dimvec), buf};
+  TF_Tensor* ret = new TF_Tensor{dtype, TensorShape(dimvec), buf};
+  size_t elem_size = TF_DataTypeSize(dtype);
+  if (elem_size > 0 && len < (elem_size * ret->shape.num_elements())) {
+    delete ret;
+    return nullptr;
+  }
+  return ret;
 }
 
 TF_Tensor* TF_TensorMaybeMove(TF_Tensor* tensor) {
@@ -927,6 +939,7 @@ int TF_DeviceListCount(const TF_DeviceList* list) {
       status->status = InvalidArgument("index out of bounds");            \
       return err_val;                                                     \
     }                                                                     \
+    status->status = Status::OK();                                        \
     return list->response[index].accessor;                                \
   }
 
@@ -1469,7 +1482,13 @@ int TF_OperationOutputConsumers(TF_Output oper_out, TF_Input* consumers,
 }
 
 int TF_OperationNumControlInputs(TF_Operation* oper) {
-  return oper->node.in_edges().size() - oper->node.num_inputs();
+  int count = 0;
+  for (const auto* edge : oper->node.in_edges()) {
+    if (edge->IsControlEdge() && !edge->src()->IsSource()) {
+      ++count;
+    }
+  }
+  return count;
 }
 
 int TF_OperationGetControlInputs(TF_Operation* oper,
@@ -1477,7 +1496,7 @@ int TF_OperationGetControlInputs(TF_Operation* oper,
                                  int max_control_inputs) {
   int count = 0;
   for (const auto* edge : oper->node.in_edges()) {
-    if (edge->IsControlEdge()) {
+    if (edge->IsControlEdge() && !edge->src()->IsSource()) {
       if (count < max_control_inputs) {
         control_inputs[count] = ToOperation(edge->src());
       }
@@ -1490,7 +1509,7 @@ int TF_OperationGetControlInputs(TF_Operation* oper,
 int TF_OperationNumControlOutputs(TF_Operation* oper) {
   int count = 0;
   for (const auto* edge : oper->node.out_edges()) {
-    if (edge->IsControlEdge()) {
+    if (edge->IsControlEdge() && !edge->dst()->IsSink()) {
       ++count;
     }
   }
@@ -1502,7 +1521,7 @@ int TF_OperationGetControlOutputs(TF_Operation* oper,
                                   int max_control_outputs) {
   int count = 0;
   for (const auto* edge : oper->node.out_edges()) {
-    if (edge->IsControlEdge()) {
+    if (edge->IsControlEdge() && !edge->dst()->IsSink()) {
       if (count < max_control_outputs) {
         control_outputs[count] = ToOperation(edge->dst());
       }
@@ -2137,7 +2156,7 @@ Status CopyGraph(Graph* src_graph, Graph* dst_graph,
     opts.return_tensors.push_back(ToTensorId(nodes_to_return[i]));
   }
 
-  // TOOD(skyewm): change to OutputTensor
+  // TODO(skyewm): change to OutputTensor
   tensorflow::ImportGraphDefResults results;
   TF_RETURN_IF_ERROR(
       ImportGraphDef(opts, gdef, dst_graph, dst_refiner, &results));
@@ -2663,6 +2682,24 @@ void TF_SessionPRun(TF_Session* session, const char* handle,
 
   TF_Run_Helper(session->session, handle, nullptr, input_pairs, output_names,
                 output_values, target_names, nullptr, status);
+}
+
+unsigned char TF_TryEvaluateConstant(TF_Graph* graph, TF_Output output,
+                                     TF_Tensor** result, TF_Status* status) {
+  *result = nullptr;
+  mutex_lock l(graph->mu);
+  OutputTensor tensor(&output.oper->node, output.index);
+  bool evaluated;
+  Tensor result_tensor;
+  status->status = EvaluateConstantTensor(
+      tensor, graph->refiner, *graph->graph.op_registry(),
+      graph->graph.versions().producer(), &evaluated, &result_tensor);
+  if (evaluated) {
+    DCHECK(status->status.ok());
+    *result = TF_TensorFromTensor(result_tensor, status);
+    if (!status->status.ok()) evaluated = false;
+  }
+  return evaluated;
 }
 
 TF_ApiDefMap* TF_NewApiDefMap(TF_Buffer* op_list_buffer, TF_Status* status) {

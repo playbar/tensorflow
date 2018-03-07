@@ -24,11 +24,17 @@ limitations under the License.
 %rename("%s") TFE_ContextDisableRunMetadata;
 %rename("%s") TFE_ContextExportRunMetadata;
 %rename("%s") TFE_ContextClearCaches;
+%rename("%s") TFE_ContextGetDevicePlacementPolicy;
+%rename("%s") TFE_ContextSetThreadLocalDevicePlacementPolicy;
 %rename("%s") TFE_OpNameGetAttrType;
 %rename("%s") TFE_Py_InitEagerTensor;
 %rename("%s") TFE_Py_RegisterExceptionClass;
+%rename("%s") TFE_Py_RegisterBackwardFunctionGetter;
+%rename("%s") TFE_Py_RegisterFallbackExceptionClass;
+%rename("%s") TFE_Py_RegisterResourceVariableType;
 %rename("%s") TFE_Py_Execute;
 %rename("%s") TFE_Py_FastPathExecute;
+%rename("%s") TFE_Py_RecordGradient;
 %rename("%s") TFE_Py_UID;
 %rename("%s") TFE_Py_TapeSetNew;
 %rename("%s") TFE_Py_TapeSetRemove;
@@ -119,6 +125,7 @@ limitations under the License.
 %rename("%s") TFE_DEVICE_PLACEMENT_EXPLICIT;
 %rename("%s") TFE_DEVICE_PLACEMENT_WARN;
 %rename("%s") TFE_DEVICE_PLACEMENT_SILENT;
+%rename("%s") TFE_DEVICE_PLACEMENT_SILENT_FOR_INT32;
 
 %include "tensorflow/c/eager/c_api.h"
 

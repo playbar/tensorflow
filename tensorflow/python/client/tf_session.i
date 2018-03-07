@@ -719,6 +719,10 @@ def TF_Reset(target, containers=None, config=None):
   $1 = &types_local;
 }
 
+%unignore SetRequireShapeInferenceFns;
+%unignore TF_TryEvaluateConstant_wrapper;
+%noexception TF_TryEvaluateConstant_wrapper;
+
 %include "tensorflow/python/client/tf_session_helper.h"
 
 %unignoreall

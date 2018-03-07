@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_COMPILER_XLA_SERVICE_HLO_EVALUATOR_H_
-#define THIRD_PARTY_TENSORFLOW_COMPILER_XLA_SERVICE_HLO_EVALUATOR_H_
+#ifndef TENSORFLOW_COMPILER_XLA_SERVICE_HLO_EVALUATOR_H_
+#define TENSORFLOW_COMPILER_XLA_SERVICE_HLO_EVALUATOR_H_
 
 #include <memory>
 
@@ -36,7 +36,10 @@ namespace xla {
 // This class is not thread-safe.
 class HloEvaluator : public DfsHloVisitorWithDefault {
  public:
-  HloEvaluator();
+  // Only evaluate up to max_loop_iterations per while-loop execution if
+  // specified.
+  explicit HloEvaluator(int64 max_loop_iterations = -1);
+
   // Evaluates an HLO module and an array of pointers to literals.
   // Returns the evaluated result as a literal if successful.
   // Precondition: The indices of arg_literals correspond to the parameter
@@ -149,9 +152,17 @@ class HloEvaluator : public DfsHloVisitorWithDefault {
 
   Status HandleTuple(HloInstruction* tuple) override;
 
+  Status HandleGather(HloInstruction* gather) override;
+
   Status HandleGetTupleElement(HloInstruction* get_tuple_element) override;
 
   Status HandleCopy(HloInstruction* copy) override;
+
+  Status HandleConditional(HloInstruction* conditional) override;
+
+  Status HandleCall(HloInstruction* call) override;
+
+  Status HandleWhile(HloInstruction* while_hlo) override;
 
  private:
   // Returns the already-evaluated literal result for the instruction.
@@ -190,9 +201,12 @@ class HloEvaluator : public DfsHloVisitorWithDefault {
   // Must be cleared for each evaluation.
   std::vector<const Literal*> arg_literals_;
 
+  // Max loop iterations to execute with no maximum if negative.
+  int64 max_loop_iterations_;
+
   TF_DISALLOW_COPY_AND_ASSIGN(HloEvaluator);
 };
 
 }  // namespace xla
 
-#endif  // THIRD_PARTY_TENSORFLOW_COMPILER_XLA_SERVICE_HLO_EVALUATOR_H_
+#endif  // TENSORFLOW_COMPILER_XLA_SERVICE_HLO_EVALUATOR_H_

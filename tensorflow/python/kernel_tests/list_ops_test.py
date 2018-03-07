@@ -26,6 +26,7 @@ from tensorflow.python.eager import backprop
 from tensorflow.python.eager import context
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
@@ -82,6 +83,21 @@ class ListOpsTest(test_util.TensorFlowTestCase):
     with context.device("gpu:0"):
       self.testTensorListFromTensor()
 
+  def testGetSetItem(self):
+    t = constant_op.constant([1.0, 2.0])
+    l = list_ops.tensor_list_from_tensor(t, element_shape=scalar_shape())
+    e0 = list_ops.tensor_list_get_item(l, 0, element_dtype=dtypes.float32)
+    self.assertAllEqual(e0, 1.0)
+    l = list_ops.tensor_list_set_item(l, 0, 3.0)
+    t = list_ops.tensor_list_stack(l, element_dtype=dtypes.float32)
+    self.assertAllEqual(t, [3.0, 2.0])
+
+  def testGetSetGPU(self):
+    if not context.num_gpus():
+      return
+    with context.device("gpu:0"):
+      self.testGetSetItem()
+
   def testUnknownShape(self):
     l = list_ops.empty_tensor_list(element_dtype=dtypes.float32,
                                    element_shape=-1)
@@ -106,6 +122,16 @@ class ListOpsTest(test_util.TensorFlowTestCase):
         list_ops.tensor_list_pop_back(
             l_cpu, element_dtype=dtypes.float32)[1],
         2.0)
+
+  def testGraphStack(self):
+    with context.graph_mode(), self.test_session():
+      tl = list_ops.empty_tensor_list(
+          element_shape=constant_op.constant([1], dtype=dtypes.int32),
+          element_dtype=dtypes.int32)
+      tl = list_ops.tensor_list_push_back(tl, [1])
+      self.assertAllEqual(
+          list_ops.tensor_list_stack(tl, element_dtype=dtypes.int32).eval(),
+          [[1]])
 
   def testSerialize(self):
     # pylint: disable=g-import-not-at-top
@@ -158,6 +184,27 @@ class ListOpsTest(test_util.TensorFlowTestCase):
           l, element_dtype=dtypes.float32)
       result = c2 * 2.0
     self.assertAllEqual(tape.gradient(result, [c])[0], [2.0, 2.0])
+
+  def testGetSetGradients(self):
+    with backprop.GradientTape() as tape:
+      c = constant_op.constant([1.0, 2.0])
+      tape.watch(c)
+      l = list_ops.tensor_list_from_tensor(c, element_shape=scalar_shape())
+      c2 = constant_op.constant(3.0)
+      tape.watch(c2)
+      l = list_ops.tensor_list_set_item(l, 0, c2)
+      e = list_ops.tensor_list_get_item(l, 0, element_dtype=dtypes.float32)
+      ee = list_ops.tensor_list_get_item(l, 1, element_dtype=dtypes.float32)
+      y = e * e + ee * ee
+    grad_c, grad_c2 = tape.gradient(y, [c, c2])
+    self.assertAllEqual(grad_c, [0.0, 4.0])
+    self.assertAllEqual(grad_c2, 6.0)
+
+  def testSetOutOfBounds(self):
+    c = constant_op.constant([1.0, 2.0])
+    l = list_ops.tensor_list_from_tensor(c, element_shape=scalar_shape())
+    with self.assertRaises(errors.InvalidArgumentError):
+      list_ops.tensor_list_set_item(l, 20, 3.0)
 
 
 if __name__ == "__main__":

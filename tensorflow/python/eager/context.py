@@ -30,6 +30,7 @@ from tensorflow.python.framework import c_api_util
 from tensorflow.python.framework import device as pydev
 from tensorflow.python.framework import errors
 from tensorflow.python.util import compat
+from tensorflow.python.util import is_in_graph_mode
 from tensorflow.python.util import tf_contextlib
 
 GRAPH_MODE = 0
@@ -49,6 +50,28 @@ _MAXINT32 = 2**31 - 1
 DEVICE_PLACEMENT_EXPLICIT = pywrap_tensorflow.TFE_DEVICE_PLACEMENT_EXPLICIT
 DEVICE_PLACEMENT_WARN = pywrap_tensorflow.TFE_DEVICE_PLACEMENT_WARN
 DEVICE_PLACEMENT_SILENT = pywrap_tensorflow.TFE_DEVICE_PLACEMENT_SILENT
+DEVICE_PLACEMENT_SILENT_FOR_INT32 = (
+    pywrap_tensorflow.TFE_DEVICE_PLACEMENT_SILENT_FOR_INT32)
+
+
+class _TensorCache(object):
+  """Simple cache which evicts items based on length in a FIFO manner."""
+
+  def __init__(self, max_items=256):
+    self._data = collections.OrderedDict()
+    self._max_items = max_items if max_items else 256
+
+  def put(self, key, value):
+    self._data[key] = value
+
+    if len(self._data) > self._max_items:
+      self._data.popitem(last=False)
+
+  def get(self, key):
+    return self._data.get(key, None)
+
+  def flush(self):
+    self._data = {}
 
 
 # TODO(agarwal): better name ?
@@ -64,6 +87,7 @@ class _EagerContext(threading.local):
     self.recording_summaries = False
     self.summary_writer_resource = None
     self.scalar_cache = {}
+    self.ones_rank_cache = _TensorCache()
 
 
 ContextStackEntry = collections.namedtuple(
@@ -122,6 +146,8 @@ class Context(object):
            right device but raises a warning.
          tfe.DEVICE_PLACEMENT_SILENT: silently copies the tensors. This might
            hide performance problems.
+         tfe.DEVICE_PLACEMENT_SILENT_FOR_INT32: silently copies int32 tensors,
+           raising errors on the other ones.
     """
     self._eager_context = _EagerContext()
     self._context_handle = None
@@ -245,6 +271,10 @@ class Context(object):
   def scalar_cache(self):
     """Per-device cache for scalars."""
     return self._eager_context.scalar_cache
+
+  def ones_rank_cache(self):
+    """Per-device cache for scalars."""
+    return self._eager_context.ones_rank_cache
 
   @property
   def scope_name(self):
@@ -410,6 +440,20 @@ class Context(object):
     if not self._context_handle:
       self._initialize_handle_and_devices()
     pywrap_tensorflow.TFE_ContextEnableRunMetadata(self._context_handle)
+
+  @tf_contextlib.contextmanager
+  def device_policy(self, policy):
+    if not self._context_handle:
+      self._initialize_handle_and_devices()
+    old = pywrap_tensorflow.TFE_ContextGetDevicePlacementPolicy(
+        self._context_handle)
+    pywrap_tensorflow.TFE_ContextSetThreadLocalDevicePlacementPolicy(
+        self._handle, policy)
+    try:
+      yield
+    finally:
+      pywrap_tensorflow.TFE_ContextSetThreadLocalDevicePlacementPolicy(
+          self._handle, old)
 
   def disable_run_metadata(self):
     """Disables tracing of op execution via RunMetadata."""
@@ -581,3 +625,10 @@ def export_run_metadata():
     A RunMetadata protocol buffer.
   """
   return context().export_run_metadata()
+
+
+# Not every user creates a Context via context.context()
+# (for example, enable_eager_execution in python/framework/ops.py),
+# but they do all import this file.  Note that IS_IN_GRAPH_MODE and
+# in_graph_mode are both parameterless functions.
+is_in_graph_mode.IS_IN_GRAPH_MODE = in_graph_mode
