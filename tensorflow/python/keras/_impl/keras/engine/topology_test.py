@@ -25,7 +25,7 @@ from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import test_util
 from tensorflow.python.keras._impl import keras
-from tensorflow.python.layers import base as tf_base_layers
+from tensorflow.python.keras._impl.keras.engine import base_layer
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import state_ops
@@ -52,11 +52,13 @@ class TopologyConstructionTest(test.TestCase):
                                    (1, 1),
                                    'float32',
                                    trainable=False)
-        self.add_update(state_ops.assign_add(self.a, [[1.]]))
+        self.add_update(state_ops.assign_add(self.a, [[1.]],
+                                             name='unconditional_update'))
         self.built = True
 
       def call(self, inputs):
-        self.add_update(state_ops.assign_add(self.a, inputs),
+        self.add_update(state_ops.assign_add(self.b, inputs,
+                                             name='conditional_update'),
                         inputs=True)
         return inputs + 1
 
@@ -97,9 +99,19 @@ class TopologyConstructionTest(test.TestCase):
     self.assertEqual(len(network.updates), 4)
     self.assertEqual(len(network.get_updates_for(None)), 2)
 
-    network.add_update(state_ops.assign_add(layer.a, x4), inputs=True)
+    network.add_update(state_ops.assign_add(layer.b, x4), inputs=True)
     self.assertEqual(len(network.updates), 5)
     self.assertEqual(len(network.get_updates_for(x4)), 2)
+
+  def test_get_updates_bn(self):
+    x1 = keras.Input(shape=(1,))
+    layer = keras.layers.BatchNormalization()
+    _ = layer.apply(x1)
+
+    print('BN updates', layer._updates)
+    self.assertEqual(len(layer.updates), 2)
+    self.assertEqual(len(layer.get_updates_for(x1)), 2)
+    self.assertEqual(len(layer.get_updates_for(None)), 0)
 
   def test_get_losses(self):
 
@@ -755,7 +767,17 @@ class TopologyConstructionTest(test.TestCase):
       def compute_mask(self, inputs, mask=None):
         return array_ops.ones_like(inputs)
 
-    if context.in_graph_mode():
+    if context.executing_eagerly():
+      a = constant_op.constant([2] * 32)
+      mask = constant_op.constant([0, 1] * 16)
+      a._keras_mask = mask
+      b = MaskedLayer().apply(a)
+      self.assertTrue(hasattr(b, '_keras_mask'))
+      self.assertAllEqual(
+          self.evaluate(array_ops.ones_like(mask)),
+          self.evaluate(getattr(b, '_keras_mask')))
+      self.assertAllEqual(self.evaluate(a * mask), self.evaluate(b))
+    else:
       x = keras.Input(shape=(32,))
       y = MaskedLayer()(x)  # pylint: disable=not-callable
       network = keras.engine.Network(x, y)
@@ -769,20 +791,11 @@ class TopologyConstructionTest(test.TestCase):
       x_2 = array_ops.placeholder(dtype='float32', shape=(None, 32))
       y_2 = network(x_2)
       self.assertEqual(y_2.get_shape().as_list(), [None, 32])
-    else:
-      a = constant_op.constant([2] * 32)
-      mask = constant_op.constant([0, 1] * 16)
-      a._keras_mask = mask
-      b = MaskedLayer().apply(a)
-      self.assertTrue(hasattr(b, '_keras_mask'))
-      self.assertAllEqual(self.evaluate(array_ops.ones_like(mask)),
-                          self.evaluate(getattr(b, '_keras_mask')))
-      self.assertAllEqual(self.evaluate(a * mask), self.evaluate(b))
 
   def test_activity_regularization_with_model_composition(self):
 
     def reg(x):
-      return keras.backend.sum(x)
+      return math_ops.reduce_sum(x)
 
     net_a_input = keras.Input((2,))
     net_a = net_a_input
@@ -874,25 +887,25 @@ class TopologyConstructionTest(test.TestCase):
 class DeferredModeTest(test.TestCase):
 
   def testDeferredTensorAttributes(self):
-    x = tf_base_layers._DeferredTensor(shape=(None, 2),
-                                       dtype='float32',
-                                       name='x')
+    x = base_layer.DeferredTensor(shape=(None, 2),
+                                  dtype='float32',
+                                  name='x')
     self.assertEqual(str(x),
                      'DeferredTensor(\'x\', shape=(?, 2), dtype=float32)')
     self.assertEqual(repr(x),
-                     '<_DeferredTensor \'x\' shape=(?, 2) dtype=float32>')
+                     '<DeferredTensor \'x\' shape=(?, 2) dtype=float32>')
 
   @test_util.run_in_graph_and_eager_modes()
   def testSimpleNetworkBuilding(self):
     inputs = keras.engine.Input(shape=(32,))
-    if context.in_eager_mode():
-      self.assertIsInstance(inputs, tf_base_layers._DeferredTensor)
+    if context.executing_eagerly():
+      self.assertIsInstance(inputs, base_layer.DeferredTensor)
       self.assertEqual(inputs.dtype.name, 'float32')
       self.assertEqual(inputs.shape.as_list(), [None, 32])
 
     x = keras.layers.Dense(2)(inputs)
-    if context.in_eager_mode():
-      self.assertIsInstance(x, tf_base_layers._DeferredTensor)
+    if context.executing_eagerly():
+      self.assertIsInstance(x, base_layer.DeferredTensor)
       self.assertEqual(x.dtype.name, 'float32')
       self.assertEqual(x.shape.as_list(), [None, 2])
 
@@ -900,7 +913,7 @@ class DeferredModeTest(test.TestCase):
     network = keras.engine.Network(inputs, outputs)
     self.assertIsInstance(network, keras.engine.Network)
 
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       # It should be possible to call such a network on EagerTensors.
       inputs = constant_op.constant(
           np.random.random((10, 32)).astype('float32'))
@@ -925,7 +938,7 @@ class DeferredModeTest(test.TestCase):
     c = keras.layers.Dense(2)(c)
 
     network = keras.engine.Network([input_a, input_b], [a, c])
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       a_val = constant_op.constant(
           np.random.random((10, 32)).astype('float32'))
       b_val = constant_op.constant(
@@ -934,6 +947,35 @@ class DeferredModeTest(test.TestCase):
       self.assertEqual(len(outputs), 2)
       self.assertEqual(outputs[0].shape.as_list(), [10, 16])
       self.assertEqual(outputs[1].shape.as_list(), [10, 2])
+
+
+class GraphUtilsTest(test.TestCase):
+
+  def testGetReachableFromInputs(self):
+
+    with self.test_session():
+      pl_1 = array_ops.placeholder(shape=None, dtype='float32')
+      pl_2 = array_ops.placeholder(shape=None, dtype='float32')
+      pl_3 = array_ops.placeholder(shape=None, dtype='float32')
+      x_1 = pl_1 + pl_2
+      x_2 = pl_2 * 2
+      x_3 = pl_3 + 1
+      x_4 = x_1 + x_2
+      x_5 = x_3 * pl_1
+
+      self.assertEqual(
+          keras.engine.base_layer.get_reachable_from_inputs([pl_1]),
+          {pl_1, x_1, x_4, x_5, x_1.op, x_4.op, x_5.op})
+      self.assertEqual(
+          keras.engine.base_layer.get_reachable_from_inputs([pl_1, pl_2]),
+          {pl_1, pl_2, x_1, x_2, x_4, x_5, x_1.op, x_2.op, x_4.op, x_5.op})
+      self.assertEqual(
+          keras.engine.base_layer.get_reachable_from_inputs([pl_3]),
+          {pl_3, x_3, x_5, x_3.op, x_5.op})
+      self.assertEqual(
+          keras.engine.base_layer.get_reachable_from_inputs([x_3]),
+          {x_3, x_5, x_5.op})
+
 
 if __name__ == '__main__':
   test.main()

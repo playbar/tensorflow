@@ -553,7 +553,7 @@ class ZeroPaddingTest(test.TestCase):
       layer = keras.layers.ZeroPadding1D(padding=2)
       layer.build(shape)
       output = layer(keras.backend.variable(inputs))
-      if context.in_eager_mode():
+      if context.executing_eagerly():
         np_output = output.numpy()
       else:
         np_output = keras.backend.eval(output)
@@ -564,7 +564,7 @@ class ZeroPaddingTest(test.TestCase):
       layer = keras.layers.ZeroPadding1D(padding=(1, 2))
       layer.build(shape)
       output = layer(keras.backend.variable(inputs))
-      if context.in_eager_mode():
+      if context.executing_eagerly():
         np_output = output.numpy()
       else:
         np_output = keras.backend.eval(output)
@@ -610,7 +610,7 @@ class ZeroPaddingTest(test.TestCase):
             padding=(2, 2), data_format=data_format)
         layer.build(inputs.shape)
         output = layer(keras.backend.variable(inputs))
-        if context.in_eager_mode():
+        if context.executing_eagerly():
           np_output = output.numpy()
         else:
           np_output = keras.backend.eval(output)
@@ -629,7 +629,7 @@ class ZeroPaddingTest(test.TestCase):
             padding=((1, 2), (3, 4)), data_format=data_format)
         layer.build(inputs.shape)
         output = layer(keras.backend.variable(inputs))
-        if context.in_eager_mode():
+        if context.executing_eagerly():
           np_output = output.numpy()
         else:
           np_output = keras.backend.eval(output)
@@ -683,7 +683,7 @@ class ZeroPaddingTest(test.TestCase):
       layer = keras.layers.ZeroPadding3D(padding=(2, 2, 2))
       layer.build(inputs.shape)
       output = layer(keras.backend.variable(inputs))
-      if context.in_eager_mode():
+      if context.executing_eagerly():
         np_output = output.numpy()
       else:
         np_output = keras.backend.eval(output)
@@ -737,7 +737,7 @@ class UpSamplingTest(test.TestCase):
                 size=(length_row, length_col), data_format=data_format)
             layer.build(inputs.shape)
             output = layer(keras.backend.variable(inputs))
-            if context.in_eager_mode():
+            if context.executing_eagerly():
               np_output = output.numpy()
             else:
               np_output = keras.backend.eval(output)
@@ -790,7 +790,7 @@ class UpSamplingTest(test.TestCase):
                   data_format=data_format)
               layer.build(inputs.shape)
               output = layer(keras.backend.variable(inputs))
-              if context.in_eager_mode():
+              if context.executing_eagerly():
                 np_output = output.numpy()
               else:
                 np_output = keras.backend.eval(output)
@@ -865,7 +865,7 @@ class CroppingTest(test.TestCase):
             cropping=cropping, data_format=data_format)
         layer.build(inputs.shape)
         output = layer(keras.backend.variable(inputs))
-        if context.in_eager_mode():
+        if context.executing_eagerly():
           np_output = output.numpy()
         else:
           np_output = keras.backend.eval(output)
@@ -892,7 +892,7 @@ class CroppingTest(test.TestCase):
             cropping=cropping, data_format=data_format)
         layer.build(inputs.shape)
         output = layer(keras.backend.variable(inputs))
-        if context.in_eager_mode():
+        if context.executing_eagerly():
           np_output = output.numpy()
         else:
           np_output = keras.backend.eval(output)
@@ -937,7 +937,7 @@ class CroppingTest(test.TestCase):
                 cropping=cropping, data_format=data_format)
             layer.build(inputs.shape)
             output = layer(keras.backend.variable(inputs))
-            if context.in_eager_mode():
+            if context.executing_eagerly():
               np_output = output.numpy()
             else:
               np_output = keras.backend.eval(output)
@@ -954,12 +954,50 @@ class CroppingTest(test.TestCase):
                                     cropping[2][0]:-cropping[2][1], :]
             np.testing.assert_allclose(np_output, expected_out)
 
-     # test incorrect use
+    # test incorrect use
     with self.assertRaises(ValueError):
       keras.layers.Cropping3D(cropping=(1, 1))
     with self.assertRaises(ValueError):
       keras.layers.Cropping3D(cropping=None)
 
+
+class DepthwiseConv2DTest(test.TestCase):
+
+  def _run_test(self, kwargs, arg, values):
+    num_samples = 2
+    stack_size = 3
+    num_row = 7
+    num_col = 6
+
+    test_kwargs = copy.copy(kwargs)
+    for value in values:
+      test_kwargs[arg] = value
+      with self.test_session(use_gpu=True):
+        testing_utils.layer_test(
+            keras.layers.DepthwiseConv2D,
+            kwargs=test_kwargs,
+            input_shape=(num_samples, num_row, num_col, stack_size))
+
+  def test_depthwise_conv2d(self):
+    kwargs = {'kernel_size': (3, 3)}
+
+    self._run_test(kwargs, 'padding', ['valid', 'same'])
+    self._run_test(kwargs, 'strides', [(2, 2)])
+    if test.is_gpu_available(cuda_only=True):
+      self._run_test(kwargs, 'data_format', ['channels_first'])
+    self._run_test(kwargs, 'depth_multiplier', [1, 2])
+
+    kwargs = {'kernel_size': 3,
+              'padding': 'valid',
+              'data_format': 'channels_first',
+              'activation': None,
+              'depthwise_regularizer': 'l2',
+              'bias_regularizer': 'l2',
+              'activity_regularizer': 'l2',
+              'depthwise_constraint': 'unit_norm',
+              'strides': (2, 2),
+             }
+    self._run_test(kwargs, 'depth_multiplier', [1])
 
 if __name__ == '__main__':
   test.main()

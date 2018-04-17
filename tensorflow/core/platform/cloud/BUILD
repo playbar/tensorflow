@@ -14,20 +14,6 @@ load(
     "if_windows",
 )
 
-filegroup(
-    name = "all_files",
-    srcs = glob(
-        include = [
-            "**/*",
-        ],
-        exclude = [
-            "**/METADATA",
-            "**/OWNERS",
-        ],
-    ),
-    visibility = ["//tensorflow:__subpackages__"],
-)
-
 cc_library(
     name = "expiring_lru_cache",
     hdrs = ["expiring_lru_cache.h"],
@@ -49,7 +35,7 @@ cc_library(
     srcs = ["ram_file_block_cache.cc"],
     hdrs = ["ram_file_block_cache.h"],
     copts = tf_copts(),
-    visibility = ["//tensorflow:__subpackages__"],
+    visibility = ["//visibility:public"],
     deps = [
         ":file_block_cache",
         "//tensorflow/core:lib",
@@ -99,6 +85,7 @@ cc_library(
         ":retrying_utils",
         ":time_util",
         "//tensorflow/core:framework_headers_lib",
+        "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "@jsoncpp_git//:jsoncpp",
     ],
@@ -277,6 +264,7 @@ tf_cc_test(
     deps = [
         ":gcs_file_system",
         ":http_request_fake",
+        "//tensorflow/core:lib",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
     ],

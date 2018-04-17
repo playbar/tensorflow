@@ -8,6 +8,7 @@ load(
     "//tensorflow/contrib/lite:build_def.bzl",
     "gen_zipped_test_files",
 )
+load("//tensorflow/contrib/lite:special_rules.bzl", "tflite_portable_test_suite")
 load(
     "//tensorflow:tensorflow.bzl",
     "tf_cc_test",
@@ -17,6 +18,7 @@ gen_zipped_test_files(
     name = "optest",
     files = [
         "add.zip",
+        "arg_max.zip",
         "avg_pool.zip",
         "batch_to_space_nd.zip",
         "concat.zip",
@@ -32,11 +34,13 @@ gen_zipped_test_files(
         "global_batch_norm.zip",
         "l2_pool.zip",
         "l2norm.zip",
+        "less.zip",
         "local_response_norm.zip",
         "log_softmax.zip",
-        "lstm.zip",
         "max_pool.zip",
+        "maximum.zip",
         "mean.zip",
+        "minimum.zip",
         "mul.zip",
         "pad.zip",
         "relu.zip",
@@ -158,6 +162,9 @@ cc_test(
     size = "small",
     srcs = ["tflite_driver_test.cc"],
     data = ["//tensorflow/contrib/lite:testdata/multi_add.bin"],
+    tags = [
+        "tflite_not_portable_android",
+    ],
     deps = [
         ":tflite_driver",
         "@com_google_googletest//:gtest_main",
@@ -192,7 +199,6 @@ cc_library(
 
 cc_library(
     name = "util",
-    testonly = 1,
     hdrs = ["util.h"],
 )
 
@@ -236,6 +242,9 @@ cc_test(
     size = "small",
     srcs = ["tf_driver_test.cc"],
     data = ["//tensorflow/contrib/lite:testdata/multi_add.pb"],
+    tags = [
+        "tflite_not_portable",
+    ],
     deps = [
         ":tf_driver",
         "@com_google_googletest//:gtest_main",
@@ -244,7 +253,6 @@ cc_test(
 
 cc_library(
     name = "generate_testspec",
-    testonly = 1,
     srcs = ["generate_testspec.cc"],
     hdrs = ["generate_testspec.h"],
     deps = [
@@ -259,6 +267,9 @@ cc_test(
     name = "generate_testspec_test",
     size = "small",
     srcs = ["generate_testspec_test.cc"],
+    tags = [
+        "tflite_not_portable",
+    ],
     deps = [
         ":generate_testspec",
         "@com_google_googletest//:gtest_main",
@@ -267,7 +278,6 @@ cc_test(
 
 cc_library(
     name = "tflite_diff_util",
-    testonly = 1,
     srcs = ["tflite_diff_util.cc"],
     hdrs = ["tflite_diff_util.h"],
     deps = [
@@ -285,7 +295,6 @@ cc_library(
 
 cc_library(
     name = "tflite_diff_flags",
-    testonly = 1,
     hdrs = ["tflite_diff_flags.h"],
     deps = [
         ":split",
@@ -320,7 +329,17 @@ tf_cc_test(
     tags = [
         "no_cuda_on_cpu_tap",
         "no_oss",
+        "tflite_not_portable",
     ],
+    deps = [
+        ":tflite_diff_flags",
+        ":tflite_diff_util",
+    ],
+)
+
+cc_binary(
+    name = "tflite_diff",
+    srcs = ["tflite_diff_example_test.cc"],
     deps = [
         ":tflite_diff_flags",
         ":tflite_diff_util",
@@ -339,7 +358,10 @@ tf_cc_test(
     ],
     data = [":optest"],
     shard_count = 20,
-    tags = ["no_oss"],
+    tags = [
+        "no_oss",
+        "tflite_not_portable",
+    ],
     deps = [
         ":parse_testdata_lib",
         ":tflite_driver",
@@ -362,14 +384,4 @@ tf_cc_test(
     }),
 )
 
-filegroup(
-    name = "all_files",
-    srcs = glob(
-        ["**/*"],
-        exclude = [
-            "**/METADATA",
-            "**/OWNERS",
-        ],
-    ),
-    visibility = ["//tensorflow:__subpackages__"],
-)
+tflite_portable_test_suite()

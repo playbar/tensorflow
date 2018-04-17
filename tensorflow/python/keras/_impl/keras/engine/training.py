@@ -31,10 +31,10 @@ from tensorflow.python.keras._impl.keras.engine import training_arrays
 from tensorflow.python.keras._impl.keras.engine import training_eager
 from tensorflow.python.keras._impl.keras.engine import training_generator
 from tensorflow.python.keras._impl.keras.engine import training_utils
+from tensorflow.python.keras._impl.keras.engine.base_layer import DeferredTensor
 from tensorflow.python.keras._impl.keras.engine.base_layer import Layer
 from tensorflow.python.keras._impl.keras.engine.network import Network
 from tensorflow.python.keras._impl.keras.utils.generic_utils import slice_arrays
-from tensorflow.python.layers.base import _DeferredTensor
 from tensorflow.python.ops import array_ops
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.training import optimizer as tf_optimizer_module
@@ -162,7 +162,7 @@ class Model(Network):
             `optimizer`, `loss`, `metrics` or `sample_weight_mode`.
     """
     loss = loss or {}
-    if context.in_eager_mode() and  not isinstance(
+    if context.executing_eagerly() and not isinstance(
         optimizer, (tf_optimizer_module.Optimizer, optimizers.TFOptimizer)):
       raise ValueError('Only TF native optimizers are supported in Eager mode.')
 
@@ -170,13 +170,13 @@ class Model(Network):
     self.loss = loss
     self.metrics = metrics or []
     self.loss_weights = loss_weights
-    if context.in_eager_mode() and sample_weight_mode is not None:
+    if context.executing_eagerly() and sample_weight_mode is not None:
       raise ValueError('sample_weight_mode is not supported in Eager mode.')
     self.sample_weight_mode = sample_weight_mode
-    if context.in_eager_mode() and weighted_metrics is not None:
+    if context.executing_eagerly() and weighted_metrics is not None:
       raise ValueError('weighted_metrics is not supported in Eager mode.')
     self.weighted_metrics = weighted_metrics
-    if context.in_eager_mode() and target_tensors is not None:
+    if context.executing_eagerly() and target_tensors is not None:
       raise ValueError('target_tensors is not supported in Eager mode.')
     self.target_tensors = target_tensors
 
@@ -230,7 +230,7 @@ class Model(Network):
         skip_target_weighing_indices.append(i)
 
     # Prepare output masks.
-    if context.in_graph_mode():
+    if not context.executing_eagerly():
       masks = self.compute_mask(self.inputs, mask=None)
       if masks is None:
         masks = [None for _ in self.outputs]
@@ -264,9 +264,9 @@ class Model(Network):
     self.loss_weights_list = loss_weights_list
 
     # initialization for Eager mode execution
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       if target_tensors is not None:
-        raise ValueError('target_tensors are not currently supported in Eager'
+        raise ValueError('target_tensors are not currently supported in Eager '
                          'mode.')
       self.total_loss = None
       self.metrics_tensors = []
@@ -738,13 +738,13 @@ class Model(Network):
                              'TensorFlow tensors. '
                              'You passed: x=' + str(x) + '; y=' + str(y))
 
-        if context.in_graph_mode():
+        if context.executing_eagerly():
+          target_tensors = None
+        else:
           # Handle target tensors if any passed.
           if not isinstance(y, (list, tuple)):
             y = [y]
           target_tensors = [v for v in y if tensor_util.is_tensor(v)]
-        else:
-          target_tensors = None
         self.compile(optimizer=self.optimizer,
                      loss=self.loss,
                      metrics=self.metrics,
@@ -761,7 +761,7 @@ class Model(Network):
     # What follows is input validation and standardization to list format,
     # in the case where all inputs are value arrays.
 
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       # In eager mode, do not do shape validation.
       feed_input_names = self.input_names
       feed_input_shapes = None
@@ -784,7 +784,7 @@ class Model(Network):
         exception_prefix='input')
 
     if y is not None:
-      if context.in_eager_mode():
+      if context.executing_eagerly():
         feed_output_names = self.output_names
         feed_output_shapes = None
         # Sample weighting not supported in this case.
@@ -835,7 +835,7 @@ class Model(Network):
       ]
       # Check that all arrays have the same length.
       training_utils.check_array_lengths(x, y, sample_weights)
-      if self._is_graph_network and not context.in_eager_mode():
+      if self._is_graph_network and not context.executing_eagerly():
         # Additional checks to avoid users mistakenly using improper loss fns.
         training_utils.check_loss_and_target_compatibility(
             y, self._feed_loss_fns, feed_output_shapes)
@@ -874,19 +874,22 @@ class Model(Network):
         whether to build the model's graph in inference mode (False), training
         mode (True), or using the Keras learning phase (None).
     """
-    if context.in_eager_mode():
+    if not getattr(self, '_uses_inputs_arg', True):
+      raise NotImplementedError(
+          'Subclassed Models without "inputs" in their call() signatures do '
+          'not yet support shape inference. File a feature request if this '
+          'limitation bothers you.')
+    if self.__class__.__name__ == 'Sequential':
+      # Note: we can't test whether the model is `Sequential` via `isinstance`
+      # since `Sequential` depends on `Model`.
+      if isinstance(inputs, list):
+        assert len(inputs) == 1
+        inputs = inputs[0]
+      self.build(input_shape=(None,) + inputs.shape[1:])
+    elif context.executing_eagerly():
       self._eager_set_inputs(inputs)
     else:
       self._symbolic_set_inputs(inputs, training=training)
-
-  def _set_scope(self, scope=None):
-    """Modify the Layer scope creation logic to create ResourceVariables."""
-    super(Model, self)._set_scope(scope=scope)
-    # Subclassed Models create ResourceVariables by default. This makes it
-    # easier to use Models in an eager/graph agnostic way (since eager execution
-    # always uses ResourceVariables).
-    if not self._is_graph_network:
-      self._scope.set_use_resource(True)
 
   def _eager_set_inputs(self, inputs):
     """Set model's input and output specs based on the input data received.
@@ -903,7 +906,7 @@ class Model(Network):
     Raises:
       ValueError: If the model's inputs are already set.
     """
-    assert context.in_eager_mode()
+    assert context.executing_eagerly()
     if self.inputs:
       raise ValueError('Model inputs are already set.')
     # On-the-fly setting of model inputs/outputs as DeferredTensors,
@@ -921,11 +924,11 @@ class Model(Network):
     else:
       dummy_output_values = [dummy_output_values]
     self.outputs = [
-        _DeferredTensor(shape=(None for _ in v.shape),
-                        dtype=v.dtype) for v in dummy_output_values]
+        DeferredTensor(shape=(None for _ in v.shape),
+                       dtype=v.dtype) for v in dummy_output_values]
     self.inputs = [
-        _DeferredTensor(shape=(None for _ in v.shape),
-                        dtype=v.dtype) for v in dummy_input_values]
+        DeferredTensor(shape=(None for _ in v.shape),
+                       dtype=v.dtype) for v in dummy_input_values]
     self.input_names = [
         'input_%d' % (i + 1) for i in range(len(dummy_input_values))]
     self.output_names = [
@@ -950,7 +953,7 @@ class Model(Network):
     Raises:
       ValueError: If the model's inputs are already set.
     """
-    assert context.in_graph_mode()
+    assert not context.executing_eagerly()
     if self.inputs:
       raise ValueError('Model inputs are already set.')
 
@@ -1169,6 +1172,9 @@ class Model(Network):
           batch_size=batch_size)
 
     elif validation_split and 0. < validation_split < 1.:
+      if training_utils.has_symbolic_tensors(x):
+        raise ValueError('If your data is in the form of symbolic tensors, '
+                         'you cannot use `validation_split`.')
       if hasattr(x[0], 'shape'):
         split_at = int(x[0].shape[0] * (1. - validation_split))
       else:
@@ -1186,7 +1192,7 @@ class Model(Network):
       val_y = None
       val_sample_weights = None
 
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       return training_eager.fit_loop(
           self,
           inputs=x,
@@ -1289,7 +1295,7 @@ class Model(Network):
         sample_weight=sample_weight,
         batch_size=batch_size)
 
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       return training_eager.test_loop(
           self, inputs=x, targets=y, sample_weights=sample_weights,
           batch_size=batch_size, verbose=verbose, steps=steps)
@@ -1330,7 +1336,7 @@ class Model(Network):
                        'argument.')
     x, _, _ = self._standardize_user_data(x)
 
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       return training_eager.predict_loop(
           self, x, batch_size=batch_size, verbose=verbose, steps=steps)
     else:
@@ -1381,7 +1387,7 @@ class Model(Network):
         sample_weight=sample_weight,
         class_weight=class_weight)
 
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       outputs = training_eager.train_on_batch(
           self, x, y, sample_weights=sample_weights)
     else:
@@ -1431,7 +1437,7 @@ class Model(Network):
     x, y, sample_weights = self._standardize_user_data(
         x, y, sample_weight=sample_weight)
 
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       outputs = training_eager.test_on_batch(
           self, x, y, sample_weights=sample_weights)
     else:
@@ -1458,11 +1464,11 @@ class Model(Network):
     """
     x, _, _ = self._standardize_user_data(x)
 
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       inputs = [ops.convert_to_tensor(val, dtype=K.floatx()) for val in x]
       return self(inputs)  # pylint: disable=not-callable
 
-    if context.in_graph_mode():
+    if not context.executing_eagerly():
       if self.uses_learning_phase and not isinstance(K.learning_phase(), int):
         ins = x + [0]
       else:
@@ -1542,20 +1548,19 @@ class Model(Network):
         max_queue_size: Integer. Maximum size for the generator queue.
             If unspecified, `max_queue_size` will default to 10.
         workers: Integer. Maximum number of processes to spin up
-            when using process based threading.
+            when using process-based threading.
             If unspecified, `workers` will default to 1. If 0, will
             execute the generator on the main thread.
-        use_multiprocessing: Boolean. If True, use process based threading.
-            If unspecified, `workers` will default to False.
-            Note that because
-            this implementation relies on multiprocessing,
-            you should not pass
-            non picklable arguments to the generator
-            as they can't be passed
-            easily to children processes.
-        shuffle: Whether to shuffle the order of the batches at
+        use_multiprocessing: Boolean.
+            If `True`, use process-based threading.
+            If unspecified, `use_multiprocessing` will default to `False`.
+            Note that because this implementation relies on multiprocessing,
+            you should not pass non-picklable arguments to the generator
+            as they can't be passed easily to children processes.
+        shuffle: Boolean. Whether to shuffle the order of the batches at
             the beginning of each epoch. Only used with instances
-            of `Sequence` (keras.utils.Sequence).
+            of `Sequence` (`keras.utils.Sequence`).
+            Has no effect when `steps_per_epoch` is not `None`.
         initial_epoch: Epoch at which to start training
             (useful for resuming a previous training run)
 
@@ -1582,9 +1587,9 @@ class Model(Network):
         ValueError: In case the generator yields
             data in an invalid format.
     """
-    if not self._is_graph_network:
+    if not self.built and not self._is_graph_network:
       raise NotImplementedError(
-          '`fit_generator` is not yet enabled for Model subclasses')
+          '`fit_generator` is not yet enabled for unbuilt Model subclasses')
 
     return training_generator.fit_generator(
         self,
@@ -1625,16 +1630,15 @@ class Model(Network):
             the `len(generator)` as a number of steps.
         max_queue_size: maximum size for the generator queue
         workers: Integer. Maximum number of processes to spin up
-            when using process based threading.
+            when using process-based threading.
             If unspecified, `workers` will default to 1. If 0, will
             execute the generator on the main thread.
-        use_multiprocessing: if True, use process based threading.
-            Note that because
-            this implementation relies on multiprocessing,
-            you should not pass
-            non picklable arguments to the generator
-            as they can't be passed
-            easily to children processes.
+        use_multiprocessing: Boolean.
+            If `True`, use process-based threading.
+            If unspecified, `use_multiprocessing` will default to `False`.
+            Note that because this implementation relies on multiprocessing,
+            you should not pass non-picklable arguments to the generator
+            as they can't be passed easily to children processes.
 
     Returns:
         Scalar test loss (if the model has a single output and no metrics)
@@ -1649,9 +1653,10 @@ class Model(Network):
         ValueError: In case the generator yields
             data in an invalid format.
     """
-    if not self._is_graph_network:
+    if not self.built and not self._is_graph_network:
       raise NotImplementedError(
-          '`evaluate_generator` is not yet enabled for Model subclasses')
+          '`evaluate_generator` is not yet enabled for '
+          'unbuilt Model subclasses')
 
     return training_generator.evaluate_generator(
         self,
@@ -1684,16 +1689,15 @@ class Model(Network):
             the `len(generator)` as a number of steps.
         max_queue_size: Maximum size for the generator queue.
         workers: Integer. Maximum number of processes to spin up
-            when using process based threading.
+            when using process-based threading.
             If unspecified, `workers` will default to 1. If 0, will
             execute the generator on the main thread.
-        use_multiprocessing: If `True`, use process based threading.
-            Note that because
-            this implementation relies on multiprocessing,
-            you should not pass
-            non picklable arguments to the generator
-            as they can't be passed
-            easily to children processes.
+        use_multiprocessing: Boolean.
+            If `True`, use process-based threading.
+            If unspecified, `use_multiprocessing` will default to `False`.
+            Note that because this implementation relies on multiprocessing,
+            you should not pass non-picklable arguments to the generator
+            as they can't be passed easily to children processes.
         verbose: verbosity mode, 0 or 1.
 
     Returns:
@@ -1703,9 +1707,9 @@ class Model(Network):
         ValueError: In case the generator yields
             data in an invalid format.
     """
-    if not self._is_graph_network:
+    if not self.built and not self._is_graph_network:
       raise NotImplementedError(
-          '`predict_generator` is not yet enabled for Model subclasses')
+          '`predict_generator` is not yet enabled for unbuilt Model subclasses')
 
     return training_generator.predict_generator(
         self,

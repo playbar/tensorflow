@@ -1,4 +1,4 @@
-/* Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -105,8 +105,11 @@ REGISTER_OP("RepeatDataset")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
-    .SetShapeFn(shape_inference::ScalarShape);  // TODO(mrry): Validate the
-                                                // shape of `count`.
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      shape_inference::ShapeHandle count_shape;
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &count_shape));
+      return shape_inference::ScalarShape(c);
+    });
 
 REGISTER_OP("TakeDataset")
     .Input("input_dataset: variant")
@@ -114,7 +117,11 @@ REGISTER_OP("TakeDataset")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
-    .SetShapeFn(shape_inference::ScalarShape);
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      shape_inference::ShapeHandle count_shape;
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &count_shape));
+      return shape_inference::ScalarShape(c);
+    });
 
 REGISTER_OP("SkipDataset")
     .Input("input_dataset: variant")
@@ -122,7 +129,11 @@ REGISTER_OP("SkipDataset")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
-    .SetShapeFn(shape_inference::ScalarShape);
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      shape_inference::ShapeHandle count_shape;
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &count_shape));
+      return shape_inference::ScalarShape(c);
+    });
 
 REGISTER_OP("BytesProducedStatsDataset")
     .Input("input_dataset: variant")
@@ -130,7 +141,11 @@ REGISTER_OP("BytesProducedStatsDataset")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
-    .SetShapeFn(shape_inference::ScalarShape);
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      shape_inference::ShapeHandle tag_shape;
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &tag_shape));
+      return shape_inference::ScalarShape(c);
+    });
 
 REGISTER_OP("LatencyStatsDataset")
     .Input("input_dataset: variant")
@@ -138,7 +153,11 @@ REGISTER_OP("LatencyStatsDataset")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")
-    .SetShapeFn(shape_inference::ScalarShape);
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      shape_inference::ShapeHandle tag_shape;
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &tag_shape));
+      return shape_inference::ScalarShape(c);
+    });
 
 REGISTER_OP("MapDataset")
     .Input("input_dataset: variant")
@@ -166,6 +185,7 @@ REGISTER_OP("MapAndBatchDataset")
     .Input("other_arguments: Targuments")
     .Input("batch_size: int64")
     .Input("num_parallel_batches: int64")
+    .Input("drop_remainder: bool")
     .Output("handle: variant")
     .Attr("f: func")
     .Attr("Targuments: list(type) >= 0")
@@ -260,6 +280,16 @@ REGISTER_OP("FilterDataset")
 REGISTER_OP("BatchDataset")
     .Input("input_dataset: variant")
     .Input("batch_size: int64")
+    .Output("handle: variant")
+    .Attr("output_types: list(type) >= 1")
+    .Attr("output_shapes: list(shape) >= 1")
+    .SetShapeFn(shape_inference::ScalarShape);
+
+// TODO(mrry): move SlideDataset to contrib in the future.
+REGISTER_OP("SlideDataset")
+    .Input("input_dataset: variant")
+    .Input("window_size: int64")
+    .Input("stride: int64")
     .Output("handle: variant")
     .Attr("output_types: list(type) >= 1")
     .Attr("output_shapes: list(shape) >= 1")

@@ -46,10 +46,6 @@ def _eager_safe_variable_handle(shape, dtype, shared_name, name, graph_mode):
   container = ops.get_default_graph()._container  # pylint: disable=protected-access
   if container is None:
     container = ""
-  if not graph_mode:
-    # When in eager mode use a uid for the shared_name, to prevent accidental
-    # sharing.
-    shared_name = str(ops.uid())
   handle = gen_resource_variable_ops.var_handle_op(shape=shape, dtype=dtype,
                                                    shared_name=shared_name,
                                                    name=name,
@@ -76,7 +72,12 @@ def _eager_safe_variable_handle(shape, dtype, shared_name, name, graph_mode):
     # know the shape and dtype of the variable pointed to by a handle. Since
     # shape inference doesn't run in eager mode we copy this data here for when
     # the handle is captured by an eager mode function.
-    handle._handle_data = h._handle_data  # pylint: disable=protected-access
+    # pylint: disable=protected-access
+    if h._handle_data is None:
+      ops.set_shape_and_handle_data_for_outputs(h.op)
+    handle._handle_data = h._handle_data
+    # pylint: enable=protected-access
+
   # Clean up our reference cycles to avoid making the garbage collector run.
   # pylint: disable=protected-access
   # OrderedDict, constructed on Graph creation, makes a simple reference loop
@@ -135,10 +136,10 @@ class EagerResourceDeleter(object):
       # valid, and so on. Printing warnings in these cases is silly
       # (exceptions raised from __del__ are printed as warnings to stderr).
       pass  # 'NoneType' object is not callable when the handle has been
-            # partially unloaded.
+      # partially unloaded.
     except AttributeError:
       pass  # 'NoneType' object has no attribute 'eager_mode' when context has
-            # been unloaded. Will catch other module unloads as well.
+      # been unloaded. Will catch other module unloads as well.
 
 
 def shape_safe_assign_variable_handle(handle, shape, value, name=None):
@@ -153,7 +154,7 @@ def shape_safe_assign_variable_handle(handle, shape, value, name=None):
 class ResourceVariable(variables.Variable):
   """Variable based on resource handles.
 
-  See the @{$python/state_ops$`Variables`} documentation for more details.
+  See the @{$variables$Variables How To} for a high level overview.
 
   A `ResourceVariable` allows you to maintain state across subsequent calls to
   session.run.
@@ -175,7 +176,9 @@ class ResourceVariable(variables.Variable):
   to see all modifications to the value of the variable which happen in any
   operation on which the read_value depends on (either directly, indirectly, or
   via a control dependency) and guaranteed to not see any modification to the
-  value of the variable on which the read_value operation does not depend on.
+  value of the variable from operations that depend on the read_value operation.
+  Updates from operations that have no dependency relationship to the read_value
+  operation might or might not be visible to read_value.
 
   For example, if there is more than one assignment to a ResourceVariable in
   a single session.run call there is a well-defined value for each operation
@@ -183,24 +186,20 @@ class ResourceVariable(variables.Variable):
   by edges in the graph. Consider the following example, in which two writes
   can cause tf.Variable and tf.ResourceVariable to behave differently:
 
-   ```python
-    a = tf.ResourceVariable(1.0)
-    a.initializer.run()
+  ```python
+  a = tf.ResourceVariable(1.0)
+  a.initializer.run()
 
-    assign = a.assign(2.0)
-    with tf.control_dependencies([assign]):
-      b = a.read_value()
-    with tf.control_dependencies([b]):
-      other_assign = a.assign(3.0)
-    with tf.control_dependencies([other_assign]):
-      # Will print 2.0 because the value was read before other_assign ran. If
-      # `a` was a tf.Variable instead, 2.0 or 3.0 could be printed.
-      tf.Print(b, [b]).eval()
+  assign = a.assign(2.0)
+  with tf.control_dependencies([assign]):
+    b = a.read_value()
+  with tf.control_dependencies([b]):
+    other_assign = a.assign(3.0)
+  with tf.control_dependencies([other_assign]):
+    # Will print 2.0 because the value was read before other_assign ran. If
+    # `a` was a tf.Variable instead, 2.0 or 3.0 could be printed.
+    tf.Print(b, [b]).eval()
   ```
-
-  To enforce these consistency properties tf.ResourceVariable might make more
-  copies than an equivalent tf.Variable under the hood, so tf.Variable is still
-  not deprecated.
   """
 
   def __init__(self,
@@ -267,9 +266,9 @@ class ResourceVariable(variables.Variable):
       if initial_value is not None:
         raise ValueError("variable_def and initial_value are mutually "
                          "exclusive.")
-      if not context.in_graph_mode():
-        raise ValueError("Creating ResourceVariable from variable_def"
-                         " only supported in GRAPH mode.")
+      if context.executing_eagerly():
+        raise ValueError("Creating ResourceVariable from variable_def is "
+                         "not supported when eager execution is enabled.")
       self._init_from_proto(variable_def, import_scope=import_scope)
     else:
       self._init_from_args(
@@ -363,11 +362,17 @@ class ResourceVariable(variables.Variable):
     # this graph.
     self._graph_key = ops.get_default_graph()._graph_key  # pylint: disable=protected-access
     with ops.init_scope():
-      self._in_graph_mode = context.in_graph_mode()
+      self._in_graph_mode = not context.executing_eagerly()
       with ops.name_scope(name, "Variable", []
                           if init_from_fn else [initial_value]) as name:
         # pylint: disable=protected-access
         handle_name = ops._name_from_scope_name(name)
+        if self._in_graph_mode:
+          shared_name = handle_name
+        else:
+          # When in eager mode use a uid for the shared_name, to prevent
+          # accidental sharing.
+          shared_name = "%s_%d" % (handle_name, ops.uid())
         if init_from_fn:
           # Use attr_scope and device(None) to simulate the behavior of
           # colocate_with when the variable we want to colocate with doesn't
@@ -383,7 +388,7 @@ class ResourceVariable(variables.Variable):
               self._handle = _eager_safe_variable_handle(
                   shape=initial_value.get_shape(),
                   dtype=initial_value.dtype.base_dtype,
-                  shared_name=handle_name,
+                  shared_name=shared_name,
                   name=name,
                   graph_mode=self._in_graph_mode)
               self._shape = initial_value.get_shape()
@@ -395,7 +400,7 @@ class ResourceVariable(variables.Variable):
             self._handle = _eager_safe_variable_handle(
                 shape=initial_value.get_shape(),
                 dtype=initial_value.dtype.base_dtype,
-                shared_name=handle_name,
+                shared_name=shared_name,
                 name=name,
                 graph_mode=False)
             self._shape = initial_value.get_shape()
@@ -418,11 +423,12 @@ class ResourceVariable(variables.Variable):
           self._handle = _eager_safe_variable_handle(
               shape=initial_value.get_shape(),
               dtype=initial_value.dtype.base_dtype,
-              shared_name=handle_name,
+              shared_name=shared_name,
               name=name,
               graph_mode=self._in_graph_mode)
           self._shape = initial_value.get_shape()
 
+        self._unique_id = shared_name
         self._initial_value = initial_value if self._in_graph_mode else None
         self._handle_name = handle_name + ":0"
         self._dtype = initial_value.dtype.base_dtype
@@ -470,7 +476,7 @@ class ResourceVariable(variables.Variable):
               self._cached_value = self._read_variable_op()
           else:
             self._cached_value = None
-        if context.in_graph_mode():
+        if not context.executing_eagerly():
           ops.add_to_collections(collections, self)
         elif ops.GraphKeys.GLOBAL_STEP in collections:
           ops.add_to_collections(ops.GraphKeys.GLOBAL_STEP, self)
@@ -489,7 +495,7 @@ class ResourceVariable(variables.Variable):
   def _init_from_proto(self, variable_def, import_scope=None):
     """Initializes from `VariableDef` proto."""
     # Note that init_from_proto is currently not supported in Eager mode.
-    assert context.in_graph_mode()
+    assert not context.executing_eagerly()
     self._in_graph_mode = True
     assert isinstance(variable_def, variable_pb2.VariableDef)
     if not variable_def.is_resource:
@@ -503,6 +509,7 @@ class ResourceVariable(variables.Variable):
     self._shape = tensor_shape.TensorShape(
         self._handle.op.get_attr("shape"))
     self._handle_name = self._handle.name
+    self._unique_id = self._handle_name
     self._initializer_op = g.as_graph_element(
         ops.prepend_name_scope(
             variable_def.initializer_name, import_scope=import_scope))
@@ -515,11 +522,19 @@ class ResourceVariable(variables.Variable):
     else:
       self._initial_value = None
     if variable_def.snapshot_name:
-      self._cached_value = g.as_graph_element(
+      snapshot = g.as_graph_element(
           ops.prepend_name_scope(
               variable_def.snapshot_name, import_scope=import_scope))
+      self._cached_value = snapshot
+      while snapshot.op.type != "ReadVariableOp":
+        snapshot = snapshot.op.inputs[0]
+      self._graph_element = snapshot
     else:
       self._cached_value = None
+      # Legacy case for protos without the snapshot name; assume it's the
+      # following.
+      self._graph_element = g.get_tensor_by_name(
+          self._handle.op.name + "/Read/ReadVariableOp:0")
     if variable_def.HasField("save_slice_info_def"):
       self._save_slice_info = variables.Variable.SaveSliceInfo(
           save_slice_info_def=variable_def.save_slice_info_def,
@@ -528,8 +543,6 @@ class ResourceVariable(variables.Variable):
       self._save_slice_info = None
     self._caching_device = None
     self._dtype = dtypes.as_dtype(self._handle.op.get_attr("dtype"))
-    self._graph_element = g.get_tensor_by_name(
-        self._handle.op.name + "/Read/ReadVariableOp:0")
     self._constraint = None
     self._cached_shape_as_list = None
 
@@ -582,7 +595,8 @@ class ResourceVariable(variables.Variable):
   def create(self):
     """The op responsible for initializing this variable."""
     if not self._in_graph_mode:
-      raise RuntimeError("Calling create in EAGER mode not supported.")
+      raise RuntimeError("Calling create is not supported when eager execution"
+                         " is enabled.")
     return self._initializer_op
 
   @property
@@ -610,7 +624,7 @@ class ResourceVariable(variables.Variable):
   @property
   def initial_value(self):
     """Returns the Tensor used as the initial value for the variable."""
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       raise RuntimeError("initial_value not supported in EAGER mode.")
     return self._initial_value
 
@@ -631,15 +645,15 @@ class ResourceVariable(variables.Variable):
 
   def eval(self, session=None):
     """Evaluates and returns the value of this variable."""
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       raise RuntimeError("Trying to eval in EAGER mode")
     return self._graph_element.eval(session=session)
 
   def numpy(self):
-    if context.in_graph_mode():
-      raise NotImplementedError(
-          "numpy() is only available when eager execution is enabled.")
-    return self.read_value().numpy()
+    if context.executing_eagerly():
+      return self.read_value().numpy()
+    raise NotImplementedError(
+        "numpy() is only available when eager execution is enabled.")
 
   def count_up_to(self, limit):
     """Increments this variable until it reaches `limit`.
@@ -720,7 +734,7 @@ class ResourceVariable(variables.Variable):
       A `VariableDef` protocol buffer, or `None` if the `Variable` is not
       in the specified name scope.
     """
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       raise RuntimeError("to_proto not supported in EAGER mode.")
     if export_scope is None or self.handle.name.startswith(export_scope):
       var_def = variable_pb2.VariableDef()
@@ -737,6 +751,10 @@ class ResourceVariable(variables.Variable):
       if self._cached_value is not None:
         var_def.snapshot_name = ops.strip_name_scope(self._cached_value.name,
                                                      export_scope)
+      else:
+        # Store the graph_element here
+        var_def.snapshot_name = ops.strip_name_scope(self._graph_element.name,
+                                                     export_scope)
       var_def.is_resource = True
       if self._save_slice_info:
         var_def.save_slice_info_def.MergeFrom(
@@ -747,7 +765,7 @@ class ResourceVariable(variables.Variable):
 
   @staticmethod
   def from_proto(variable_def, import_scope=None):
-    if context.in_eager_mode():
+    if context.executing_eagerly():
       raise RuntimeError("from_proto not supported in EAGER mode.")
     return ResourceVariable(
         variable_def=variable_def, import_scope=import_scope)
@@ -850,7 +868,8 @@ class ResourceVariable(variables.Variable):
       tape.watch_variable(self)
     return _UnreadVariable(
         self._handle, self.dtype, self._shape, self._in_graph_mode,
-        self._handle_deleter if not self._in_graph_mode else None, op)
+        self._handle_deleter if not self._in_graph_mode else None, op,
+        self._unique_id)
 
   def assign(self, value, use_locking=None, name=None, read_value=True):
     """Assigns a new value to this variable.
@@ -901,7 +920,6 @@ class ResourceVariable(variables.Variable):
   def _dense_var_to_tensor(self, dtype=None, name=None, as_ref=False):
     del name
     if dtype is not None and dtype != self.dtype:
-      print("trying to switch the dtype to ", dtype, " from ", self.dtype)
       return NotImplemented
     if as_ref:
       return self.read_value().op.inputs[0]
@@ -965,7 +983,7 @@ class _UnreadVariable(ResourceVariable):
   """
 
   def __init__(self, handle, dtype,  # pylint: disable=super-init-not-called
-               shape, in_graph_mode, deleter, parent_op):
+               shape, in_graph_mode, deleter, parent_op, unique_id):
     # We do not call super init on purpose.
     self._trainable = False
     self._save_slice_info = None
@@ -978,16 +996,17 @@ class _UnreadVariable(ResourceVariable):
       self._handle_name = ""
     else:
       self._handle_name = self._handle.name
+    self._unique_id = unique_id
     self._dtype = dtype
     self._constraint = None
     self._cached_value = None
     self._is_initialized_op = None
     self._initializer_op = None
     self._parent_op = parent_op
-    if context.in_graph_mode():
-      self._graph_element = self.read_value()
-    else:
+    if context.executing_eagerly():
       self._graph_element = None
+    else:
+      self._graph_element = self.read_value()
     self._handle_deleter = deleter
 
   def value(self):
@@ -1081,6 +1100,11 @@ ops.register_proto_function(
     from_proto=_from_proto_fn)
 ops.register_proto_function(
     ops.GraphKeys.MODEL_VARIABLES,
+    proto_type=variable_pb2.VariableDef,
+    to_proto=_to_proto_fn,
+    from_proto=_from_proto_fn)
+ops.register_proto_function(
+    ops.GraphKeys.GLOBAL_STEP,
     proto_type=variable_pb2.VariableDef,
     to_proto=_to_proto_fn,
     from_proto=_from_proto_fn)

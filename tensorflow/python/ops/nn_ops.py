@@ -150,14 +150,12 @@ class _NonAtrousConvolution(object):
                                                               conv_dims))
     if conv_dims == 1:
       # conv1d uses the 2-d data format names
-      if data_format is None or data_format == "NWC":
-        data_format_2d = "NHWC"
-      elif data_format == "NCW":
-        data_format_2d = "NCHW"
-      else:
+      if data_format is None:
+        data_format = "NWC"
+      elif data_format not in {"NCW", "NWC", "NCHW", "NHWC"}:
         raise ValueError("data_format must be \"NWC\" or \"NCW\".")
       self.strides = strides[0]
-      self.data_format = data_format_2d
+      self.data_format = data_format
       self.conv_op = self._conv1d
     elif conv_dims == 2:
       if data_format is None or data_format == "NHWC":
@@ -699,7 +697,7 @@ def convolution(
   `padded_input` is obtained by zero padding the input using an effective
   spatial filter shape of `(spatial_filter_shape-1) * dilation_rate + 1` and
   output striding `strides` as described in the
-  @{tf.nn.convolution$comment here}.
+  @{$python/nn#Convolution$comment here}.
 
   In the case that `data_format` does start with `"NC"`, the `input` and output
   (but not the `filter`) are simply transposed as follows:
@@ -1043,9 +1041,7 @@ def pool(
 
 @tf_export("nn.atrous_conv2d")
 def atrous_conv2d(value, filters, rate, padding, name=None):
-  """Atrous convolution (a.k.a.
-
-  convolution with holes or dilated convolution).
+  """Atrous convolution (a.k.a. convolution with holes or dilated convolution).
 
   This function is a simpler wrapper around the more general
   @{tf.nn.convolution}, and exists only for backwards compatibility. You can
@@ -1504,7 +1500,7 @@ def bias_add(value, bias, data_format=None, name=None):
     A `Tensor` with the same type as `value`.
   """
   with ops.name_scope(name, "BiasAdd", [value, bias]) as name:
-    if context.in_graph_mode():
+    if not context.executing_eagerly():
       value = ops.convert_to_tensor(value, name="input")
       bias = ops.convert_to_tensor(bias, dtype=value.dtype, name="bias")
     return gen_nn_ops.bias_add(value, bias, data_format=data_format, name=name)
@@ -1616,7 +1612,7 @@ def _flatten_outer_dims(logits):
   output = array_ops.reshape(logits, array_ops.concat([[-1], last_dim_size], 0))
 
   # Set output shape if known.
-  if context.in_graph_mode():
+  if not context.executing_eagerly():
     shape = logits.get_shape()
     if shape is not None and shape.dims is not None:
       shape = shape.as_list()
@@ -1807,12 +1803,15 @@ def softmax_cross_entropy_with_logits_v2(
   on `logits` internally for efficiency.  Do not call this op with the
   output of `softmax`, as it will produce incorrect results.
 
-  `logits` and `labels` must have the same shape, e.g.
-  `[batch_size, num_classes]` and the same dtype (either `float16`, `float32`,
+  A common use case is to have logits and labels of shape
+  `[batch_size, num_classes]`, but higher dimensions are supported, with
+  the `dim` argument specifying the class dimension.
+
+  `logits` and `labels` must have the same dtype (either `float16`, `float32`,
   or `float64`).
 
   Backpropagation will happen into both `logits` and `labels`.  To disallow
-  backpropagation into `labels`, pass label tensors through a `stop_gradients`
+  backpropagation into `labels`, pass label tensors through @{tf.stop_gradient}
   before feeding it to this function.
 
   **Note that to avoid confusion, it is required to pass only named arguments to
@@ -1820,14 +1819,17 @@ def softmax_cross_entropy_with_logits_v2(
 
   Args:
     _sentinel: Used to prevent positional parameters. Internal, do not use.
-    labels: Each row `labels[i]` must be a valid probability distribution.
+    labels: Each vector along the class dimension should hold a valid
+      probability distribution e.g. for the case in which labels are of shape
+      `[batch_size, num_classes]`, each row of `labels[i]` must be a valid
+      probability distribution.
     logits: Unscaled log probabilities.
     dim: The class dimension. Defaulted to -1 which is the last dimension.
     name: A name for the operation (optional).
 
   Returns:
-    A 1-D `Tensor` of length `batch_size` of the same type as `logits` with the
-    softmax cross entropy loss.
+    A `Tensor` of the same shape as `labels` and of the same type as `logits`
+    with the softmax cross entropy loss.
   """
   _ensure_xent_args("softmax_cross_entropy_with_logits", _sentinel, labels,
                     logits)
@@ -1840,8 +1842,10 @@ def softmax_cross_entropy_with_logits_v2(
                       [logits, labels]) as name:
     logits = ops.convert_to_tensor(logits, name="logits")
     labels = ops.convert_to_tensor(labels, name="labels")
+    convert_to_float32 = (
+        logits.dtype == dtypes.float16 or logits.dtype == dtypes.bfloat16)
     precise_logits = math_ops.cast(
-        logits, dtypes.float32) if (logits.dtype == dtypes.float16) else logits
+        logits, dtypes.float32) if convert_to_float32 else logits
     # labels and logits must be of the same type
     labels = math_ops.cast(labels, precise_logits.dtype)
     input_rank = array_ops.rank(precise_logits)
@@ -1881,13 +1885,14 @@ def softmax_cross_entropy_with_logits_v2(
 
     # Make shape inference work since reshape and transpose may erase its static
     # shape.
-    if context.in_graph_mode() and shape is not None and shape.dims is not None:
+    if not context.executing_eagerly(
+    ) and shape is not None and shape.dims is not None:
       shape = shape.as_list()
       del shape[dim]
       cost.set_shape(shape)
 
-    if logits.dtype == dtypes.float16:
-      return math_ops.cast(cost, dtypes.float16)
+    if convert_to_float32:
+      return math_ops.cast(cost, logits.dtype)
     else:
       return cost
 
@@ -1896,7 +1901,7 @@ _XENT_DEPRECATION = """
 Future major versions of TensorFlow will allow gradients to flow
 into the labels input on backprop by default.
 
-See tf.nn.softmax_cross_entropy_with_logits_v2.
+See @{tf.nn.softmax_cross_entropy_with_logits_v2}.
 """
 
 
@@ -1927,9 +1932,9 @@ def softmax_cross_entropy_with_logits(
   on `logits` internally for efficiency.  Do not call this op with the
   output of `softmax`, as it will produce incorrect results.
 
-  `logits` and `labels` must have the same shape, e.g.
-  `[batch_size, num_classes]` and the same dtype (either `float16`, `float32`,
-  or `float64`).
+  A common use case is to have logits and labels of shape
+  `[batch_size, num_classes]`, but higher dimensions are supported, with
+  the `dim` argument specifying the class dimension.
 
   Backpropagation will happen only into `logits`.  To calculate a cross entropy
   loss that allows backpropagation into both `logits` and `labels`, see
@@ -1940,14 +1945,17 @@ def softmax_cross_entropy_with_logits(
 
   Args:
     _sentinel: Used to prevent positional parameters. Internal, do not use.
-    labels: Each row `labels[i]` must be a valid probability distribution.
+    labels: Each vector along the class dimension should hold a valid
+      probability distribution e.g. for the case in which labels are of shape
+      `[batch_size, num_classes]`, each row of `labels[i]` must be a valid
+      probability distribution.
     logits: Unscaled log probabilities.
     dim: The class dimension. Defaulted to -1 which is the last dimension.
     name: A name for the operation (optional).
 
   Returns:
-    A 1-D `Tensor` of length `batch_size` of the same type as `logits` with the
-    softmax cross entropy loss.
+    A `Tensor` of the same shape as `labels` and of the same type as `logits`
+    with the softmax cross entropy loss.
   """
   _ensure_xent_args("softmax_cross_entropy_with_logits", _sentinel, labels,
                     logits)
@@ -1978,14 +1986,17 @@ def sparse_softmax_cross_entropy_with_logits(
   must provide a single specific index for the true class for each row of
   `logits` (each minibatch entry).  For soft softmax classification with
   a probability distribution for each entry, see
-  `softmax_cross_entropy_with_logits`.
+  `softmax_cross_entropy_with_logits_v2`.
 
   **WARNING:** This op expects unscaled logits, since it performs a `softmax`
   on `logits` internally for efficiency.  Do not call this op with the
   output of `softmax`, as it will produce incorrect results.
 
-  A common use case is to have logits of shape `[batch_size, num_classes]` and
-  labels of shape `[batch_size]`. But higher dimensions are supported.
+  A common use case is to have logits and labels of shape
+  `[batch_size, num_classes]`, but higher dimensions are supported, in which
+  case the `dim`-th dimension is assumed to be of size `num_classes`.
+  `logits` and `labels` must have the same dtype (either `float16`, `float32`,
+  or `float64`).
 
   **Note that to avoid confusion, it is required to pass only named arguments to
   this function.**
@@ -2318,7 +2329,7 @@ def dropout(x, keep_prob, noise_shape=None, seed=None, name=None):  # pylint: di
     # 0. if [keep_prob, 1.0) and 1. if [1.0, 1.0 + keep_prob)
     binary_tensor = math_ops.floor(random_tensor)
     ret = math_ops.div(x, keep_prob) * binary_tensor
-    if context.in_graph_mode():
+    if not context.executing_eagerly():
       ret.set_shape(x.get_shape())
     return ret
 
