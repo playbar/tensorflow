@@ -34,3 +34,4 @@ xcuserdata/**
 *.iml
 local.properties
 gradleBuild
+cmake-build-debug
