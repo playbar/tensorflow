@@ -18,6 +18,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import functools
+
 from tensorflow.contrib.timeseries.python.timeseries import ar_model
 from tensorflow.contrib.timeseries.python.timeseries import feature_keys
 from tensorflow.contrib.timeseries.python.timeseries import head as ts_head_lib
@@ -61,7 +63,10 @@ class TimeSeriesRegressor(estimator_lib.Estimator):
     input_statistics_generator = math_utils.InputStatisticsFromMiniBatch(
         dtype=model.dtype, num_features=model.num_features)
     if state_manager is None:
-      state_manager = state_management.PassthroughStateManager()
+      if isinstance(model, ar_model.ARModel):
+        state_manager = state_management.FilteringOnlyStateManager()
+      else:
+        state_manager = state_management.PassthroughStateManager()
     if optimizer is None:
       optimizer = train.AdamOptimizer(0.02)
     self._model = model
@@ -246,11 +251,13 @@ class ARRegressor(TimeSeriesRegressor):
         anomaly_distribution = ar_model.AnomalyMixtureARModel.GAUSSIAN_ANOMALY
       model = ar_model.ARModel(
           periodicities=periodicities, num_features=num_features,
+          prediction_model_factory=functools.partial(
+              ar_model.FlatPredictionModel,
+              hidden_layer_sizes=hidden_layer_sizes),
           exogenous_feature_columns=exogenous_feature_columns,
           num_time_buckets=num_time_buckets,
           input_window_size=input_window_size,
-          output_window_size=output_window_size, loss=loss,
-          hidden_layer_sizes=hidden_layer_sizes)
+          output_window_size=output_window_size, loss=loss)
     else:
       if loss != ar_model.ARModel.NORMAL_LIKELIHOOD_LOSS:
         raise ValueError(
@@ -261,9 +268,11 @@ class ARRegressor(TimeSeriesRegressor):
           input_window_size=input_window_size,
           output_window_size=output_window_size,
           num_features=num_features,
+          prediction_model_factory=functools.partial(
+              ar_model.FlatPredictionModel,
+              hidden_layer_sizes=hidden_layer_sizes),
           exogenous_feature_columns=exogenous_feature_columns,
           num_time_buckets=num_time_buckets,
-          hidden_layer_sizes=hidden_layer_sizes,
           anomaly_prior_probability=anomaly_prior_probability,
           anomaly_distribution=anomaly_distribution)
     state_manager = state_management.FilteringOnlyStateManager()
@@ -279,7 +288,7 @@ class StateSpaceRegressor(TimeSeriesRegressor):
   """An Estimator for general state space models."""
 
   def __init__(self, model, state_manager=None, optimizer=None, model_dir=None,
-               config=None):
+               config=None, head_type=ts_head_lib.TimeSeriesRegressionHead):
     """See TimeSeriesRegressor. Uses the ChainingStateManager by default."""
     if not isinstance(model, state_space_model.StateSpaceModel):
       raise ValueError(
@@ -292,7 +301,8 @@ class StateSpaceRegressor(TimeSeriesRegressor):
         state_manager=state_manager,
         optimizer=optimizer,
         model_dir=model_dir,
-        config=config)
+        config=config,
+        head_type=head_type)
 
 
 class StructuralEnsembleRegressor(StateSpaceRegressor):
@@ -335,7 +345,8 @@ class StructuralEnsembleRegressor(StateSpaceRegressor):
                anomaly_prior_probability=None,
                optimizer=None,
                model_dir=None,
-               config=None):
+               config=None,
+               head_type=ts_head_lib.TimeSeriesRegressionHead):
     """Initialize the Estimator.
 
     Args:
@@ -392,6 +403,8 @@ class StructuralEnsembleRegressor(StateSpaceRegressor):
           from tf.train.Optimizer. Defaults to Adam with step size 0.02.
       model_dir: See `Estimator`.
       config: See `Estimator`.
+      head_type: The kind of head to use for the model (inheriting from
+          `TimeSeriesRegressionHead`).
     """
     if anomaly_prior_probability is not None:
       filtering_postprocessor = StateInterpolatingAnomalyDetector(
@@ -415,4 +428,5 @@ class StructuralEnsembleRegressor(StateSpaceRegressor):
         model=model,
         optimizer=optimizer,
         model_dir=model_dir,
-        config=config)
+        config=config,
+        head_type=head_type)

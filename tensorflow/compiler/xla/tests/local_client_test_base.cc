@@ -35,9 +35,9 @@ namespace xla {
 
 /* static */ TestAllocator* LocalClientTestBase::allocator_;
 
-StatusOr<se::DeviceMemoryBase> TestAllocator::Allocate(int device_ordinal,
-                                                       uint64 size,
-                                                       bool retry_on_failure) {
+StatusOr<OwningDeviceMemory> TestAllocator::Allocate(int device_ordinal,
+                                                     uint64 size,
+                                                     bool retry_on_failure) {
   VLOG(2) << "Allocate(" << device_ordinal << ", " << size << ")";
   {
     tensorflow::mutex_lock lock(count_mutex_);
@@ -48,8 +48,7 @@ StatusOr<se::DeviceMemoryBase> TestAllocator::Allocate(int device_ordinal,
                                                  retry_on_failure);
 }
 
-tensorflow::Status TestAllocator::Deallocate(int device_ordinal,
-                                             se::DeviceMemoryBase* mem) {
+Status TestAllocator::Deallocate(int device_ordinal, se::DeviceMemoryBase mem) {
   VLOG(2) << "Deallocate(" << device_ordinal << ")";
   {
     tensorflow::mutex_lock lock(count_mutex_);
@@ -190,7 +189,19 @@ StatusOr<ScopedShapedBuffer> LocalClientTestBase::ExecuteLocally(
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<LocalExecutable> executable,
       local_client_->Compile(computation, argument_layouts, build_options));
-  return executable->Run(arguments, run_options);
+  TF_ASSIGN_OR_RETURN(auto ret, executable->Run(arguments, run_options));
+
+  auto device_ordinal =
+      build_options.device_ordinal() == -1 ? 0 : build_options.device_ordinal();
+  auto* stream = run_options.stream();
+  if (!stream) {
+    stream = local_client_->mutable_backend()
+                 ->BorrowStream(device_ordinal)
+                 .ValueOrDie()
+                 .get();
+  }
+  TF_RETURN_IF_ERROR(stream->BlockHostUntilDone());
+  return std::move(ret);
 }
 
 }  // namespace xla

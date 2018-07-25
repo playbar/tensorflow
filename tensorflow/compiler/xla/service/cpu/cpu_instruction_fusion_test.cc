@@ -19,9 +19,9 @@ limitations under the License.
 #include <set>
 
 #include "tensorflow/compiler/xla/service/hlo_matchers.h"
+#include "tensorflow/compiler/xla/service/hlo_parser.h"
 #include "tensorflow/compiler/xla/service/transpose_folding.h"
 #include "tensorflow/compiler/xla/tests/hlo_test_base.h"
-#include "tensorflow/compiler/xla/tools/parser/hlo_parser.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
 
 namespace op = xla::testing::opcode_matchers;
@@ -158,37 +158,95 @@ TEST_F(InstructionFusionTest, DotOperationFusion_ElementReuse) {
   EXPECT_EQ(dot, computation->root_instruction());
 }
 
-TEST_F(InstructionFusionTest, DotOperationFusion_TransposeFusion) {
-  HloComputation::Builder builder(TestName());
-  HloInstruction* arg0 = builder.AddInstruction(HloInstruction::CreateParameter(
-      0, ShapeUtil::MakeShape(F32, {1, 256}), "arg0"));
-  HloInstruction* arg1 = builder.AddInstruction(HloInstruction::CreateParameter(
-      1, ShapeUtil::MakeShape(F32, {1024, 256}), "arg1"));
+TEST_F(InstructionFusionTest, DotOperationFusion_TransposeFusion_RHS) {
+  string hlo_string = R"(
+HloModule DotOperationFusion_TransposeFusion
 
-  HloInstruction* exp1 = builder.AddInstruction(HloInstruction::CreateUnary(
-      ShapeUtil::MakeShape(S32, {1024, 256}), HloOpcode::kExp, arg1));
-  HloInstruction* transpose1 =
-      builder.AddInstruction(HloInstruction::CreateTranspose(
-          ShapeUtil::MakeShape(S32, {256, 1024}), exp1, {1, 0}));
-  builder.AddInstruction(
-      MakeDot(ShapeUtil::MakeShape(F32, {1, 1024}), arg0, transpose1));
+ENTRY DotOperationFusion_TransposeFusion {
+  arg0 = f32[1,256] parameter(0)
+  arg1 = f32[1024,256] parameter(1)
+  exponential = s32[1024,256] exponential(arg1)
+  transpose = s32[256,1024] transpose(exponential), dimensions={1,0}
+  ROOT dot = f32[1,1024] dot(arg0, transpose), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+}
+)";
 
-  auto module = CreateNewModule();
-  auto computation = module->AddEntryComputation(builder.Build());
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseHloString(hlo_string));
+  HloComputation* computation = module->entry_computation();
+
   TransposeFolding transpose_folding(
       [](const HloInstruction& dot,
          const TransposeFolding::OperandIndices& candidate_operands) {
         return candidate_operands;
       },
       TransposeFolding::NeverFoldTranspose);
-  EXPECT_TRUE(transpose_folding.Run(module.get()).ValueOrDie());
-  EXPECT_EQ(computation->root_instruction()->opcode(), HloOpcode::kFusion);
-  EXPECT_EQ(computation->root_instruction()->fusion_kind(),
-            HloInstruction::FusionKind::kTransposeDot);
-  EXPECT_FALSE(CpuInstructionFusion().Run(module.get()).ValueOrDie());
-  EXPECT_EQ(computation->root_instruction()->opcode(), HloOpcode::kFusion);
-  EXPECT_EQ(computation->root_instruction()->fusion_kind(),
-            HloInstruction::FusionKind::kTransposeDot);
+  TF_ASSERT_OK_AND_ASSIGN(bool changed, transpose_folding.Run(module.get()));
+  ASSERT_TRUE(changed);
+  ASSERT_THAT(computation->root_instruction(),
+              op::Dot(op::Parameter(0), op::Exp(op::Parameter(1)),
+                      /*lhs_contracting_dim=*/1, /*rhs_contracting_dim=*/1));
+}
+
+TEST_F(InstructionFusionTest, DotOperationFusion_TransposeFusion_LHS) {
+  string hlo_string = R"(
+HloModule DotOperationFusion_TransposeFusion
+
+ENTRY DotOperationFusion_TransposeFusion {
+  arg0 = f32[256,1] parameter(0)
+  arg1 = f32[256,1024] parameter(1)
+  transpose = s32[1,256] transpose(arg0), dimensions={1,0}
+  exponential = s32[256,1024] exponential(arg1)
+  ROOT dot = f32[1,1024] dot(transpose, exponential), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+}
+)";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseHloString(hlo_string));
+  HloComputation* computation = module->entry_computation();
+
+  TransposeFolding transpose_folding(
+      [](const HloInstruction& dot,
+         const TransposeFolding::OperandIndices& candidate_operands) {
+        return candidate_operands;
+      },
+      TransposeFolding::NeverFoldTranspose);
+  TF_ASSERT_OK_AND_ASSIGN(bool changed, transpose_folding.Run(module.get()));
+  ASSERT_TRUE(changed);
+  ASSERT_THAT(computation->root_instruction(),
+              op::Dot(op::Parameter(0), op::Exp(op::Parameter(1)),
+                      /*lhs_contracting_dim=*/0, /*rhs_contracting_dim=*/0));
+}
+
+TEST_F(InstructionFusionTest,
+       DotOperationFusion_TransposeFusion_LHS_NonDefault) {
+  string hlo_string = R"(
+HloModule DotOperationFusion_TransposeFusion
+
+ENTRY DotOperationFusion_TransposeFusion {
+  arg0 = f32[1,256] parameter(0)
+  arg1 = f32[256,1024] parameter(1)
+  transpose = s32[256,1] transpose(arg0), dimensions={1,0}
+  exponential = s32[256,1024] exponential(arg1)
+  ROOT dot = f32[1,1024] dot(transpose, exponential), lhs_contracting_dims={0}, rhs_contracting_dims={0}
+}
+)";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseHloString(hlo_string));
+  HloComputation* computation = module->entry_computation();
+
+  TransposeFolding transpose_folding(
+      [](const HloInstruction& dot,
+         const TransposeFolding::OperandIndices& candidate_operands) {
+        return candidate_operands;
+      },
+      TransposeFolding::NeverFoldTranspose);
+  TF_ASSERT_OK_AND_ASSIGN(bool changed, transpose_folding.Run(module.get()));
+  ASSERT_TRUE(changed);
+  ASSERT_THAT(computation->root_instruction(),
+              op::Dot(op::Parameter(0), op::Exp(op::Parameter(1)),
+                      /*lhs_contracting_dim=*/1, /*rhs_contracting_dim=*/0));
 }
 
 class OpcodeFusionTest : public InstructionFusionTest {
@@ -224,7 +282,7 @@ class OpcodeFusionTest : public InstructionFusionTest {
         builder.AddInstruction(HloInstruction::CreateParameter(
             0, ShapeUtil::MakeShape(F32, {}), "arg0"));
     HloInstruction* one = builder.AddInstruction(
-        HloInstruction::CreateConstant(Literal::CreateR0<float>(1.0)));
+        HloInstruction::CreateConstant(LiteralUtil::CreateR0<float>(1.0)));
     builder.AddInstruction(HloInstruction::CreateBinary(
         ShapeUtil::MakeShape(F32, {}), HloOpcode::kAdd, arg0, one));
     return module->AddEmbeddedComputation(builder.Build());
@@ -443,8 +501,8 @@ TEST_F(OpcodeFusionTest, UnaryMapOfExp) {
 
   HloInstruction* exp = builder.AddInstruction(
       HloInstruction::CreateUnary(shape, HloOpcode::kExp, param0));
-  builder.AddInstruction(HloInstruction::CreateMap(
-      shape, {exp}, CreateAdderToOne(module.get()), /*static_operands=*/{}));
+  builder.AddInstruction(
+      HloInstruction::CreateMap(shape, {exp}, CreateAdderToOne(module.get())));
 
   module->AddEntryComputation(builder.Build());
 
@@ -467,8 +525,8 @@ TEST_F(OpcodeFusionTest, BinaryMapOfExps) {
   HloInstruction* exp1 = builder.AddInstruction(
       HloInstruction::CreateUnary(shape, HloOpcode::kExp, param1));
 
-  builder.AddInstruction(HloInstruction::CreateMap(
-      shape, {exp0, exp1}, CreateMax(module.get()), /*static_operands=*/{}));
+  builder.AddInstruction(
+      HloInstruction::CreateMap(shape, {exp0, exp1}, CreateMax(module.get())));
 
   module->AddEntryComputation(builder.Build());
 
@@ -537,7 +595,7 @@ TEST_F(OpcodeFusionTest, MessOfFusileNodes) {
   auto pad = builder.AddInstruction(HloInstruction::CreatePad(
       ShapeUtil::MakeShape(S32, {5}), idx_choice,
       builder.AddInstruction(
-          HloInstruction::CreateConstant(Literal::CreateR0(0))),
+          HloInstruction::CreateConstant(LiteralUtil::CreateR0(0))),
       padding_config));
 
   auto slice = builder.AddInstruction(HloInstruction::CreateDynamicSlice(
@@ -717,7 +775,7 @@ TEST_P(GatherLoopFusionTest, GatherLoopFusion) {
   string hlo_string = tensorflow::strings::StrCat(
       "HloModule ", spec.test_name, "\n\n", spec.hlo_computation_text);
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
-                          tools::Parse(hlo_string));
+                          ParseHloString(hlo_string));
 
   RunFusionAndCheckOpcodesWereFused(
       module.get(),

@@ -37,7 +37,7 @@ from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import script_ops
-from tensorflow.python.training import checkpointable_utils
+from tensorflow.python.training.checkpointable import util as checkpointable_utils
 
 
 class IteratorTest(test.TestCase):
@@ -192,6 +192,20 @@ class IteratorTest(test.TestCase):
       x = datasets.Iterator(ds).next()
       x = math_ops.add(x, x)
     self.assertAllEqual([0., 2.], x.numpy())
+
+  def testGpuTensor(self):
+    ds = Dataset.from_tensors([0., 1.])
+    with ops.device(test.gpu_device_name()):
+      for x in ds:
+        y = math_ops.add(x, x)
+    self.assertAllEqual([0., 2.], y.numpy())
+
+  def testGpuDefinedDataset(self):
+    with ops.device(test.gpu_device_name()):
+      ds = Dataset.from_tensors([0., 1.])
+      for x in ds:
+        y = math_ops.add(x, x)
+    self.assertAllEqual([0., 2.], y.numpy())
 
   def testTensorsExplicitPrefetchToDevice(self):
     ds = Dataset.from_tensor_slices([0., 1.])

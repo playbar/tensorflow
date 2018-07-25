@@ -192,6 +192,7 @@ string ToVlogString(dnn::DataType data_type) {
     case dnn::DataType::kInt8:
       return "dnn::DataType::kInt8";
   }
+  return "unknown DataType";
 }
 
 // Used together with PARAM to VLOG calls made to the stream. Intended
@@ -267,6 +268,12 @@ Stream::~Stream() {
   VLOG_CALL();
 
   temporary_memory_manager_.ForceDeallocateAll();
+  // Ensure the stream is completed.
+  auto status = BlockHostUntilDone();
+  if (!status.ok()) {
+    LOG(WARNING) << "Error blocking host until done in stream destructor: "
+                 << status;
+  }
 
   if (allocated_) {
     parent_->DeallocateStream(this);
@@ -276,7 +283,7 @@ Stream::~Stream() {
 Stream &Stream::Init() {
   VLOG_CALL();
 
-  mutex_lock lock{mu_};
+  mutex_lock lock(mu_);
   CHECK_EQ(false, allocated_)
       << "stream appears to already have been initialized";
   CHECK(!ok_) << "stream should be in !ok() state pre-initialization";
@@ -1376,15 +1383,16 @@ Stream &Stream::ThenPoolForward(
     const dnn::BatchDescriptor &input_dimensions,
     const DeviceMemory<double> &input_data,
     const dnn::BatchDescriptor &output_dimensions,
-    DeviceMemory<double> *output_data) {
+    DeviceMemory<double> *output_data, ScratchAllocator *workspace_allocator) {
   VLOG_CALL(PARAM(pooling_dimensions), PARAM(input_dimensions),
-            PARAM(input_data), PARAM(output_dimensions), PARAM(output_data));
+            PARAM(input_data), PARAM(output_dimensions), PARAM(output_data),
+            PARAM(workspace_allocator));
 
   if (ok()) {
     if (dnn::DnnSupport *dnn = parent_->AsDnn()) {
       CheckError(dnn->DoPoolForward(this, pooling_dimensions, input_dimensions,
-                                    input_data, output_dimensions,
-                                    output_data));
+                                    input_data, output_dimensions, output_data,
+                                    workspace_allocator));
     } else {
       SetError();
       LOG(WARNING)
@@ -1400,15 +1408,16 @@ Stream &Stream::ThenPoolForward(
     const dnn::BatchDescriptor &input_dimensions,
     const DeviceMemory<float> &input_data,
     const dnn::BatchDescriptor &output_dimensions,
-    DeviceMemory<float> *output_data) {
+    DeviceMemory<float> *output_data, ScratchAllocator *workspace_allocator) {
   VLOG_CALL(PARAM(pooling_dimensions), PARAM(input_dimensions),
-            PARAM(input_data), PARAM(output_dimensions), PARAM(output_data));
+            PARAM(input_data), PARAM(output_dimensions), PARAM(output_data),
+            PARAM(workspace_allocator));
 
   if (ok()) {
     if (dnn::DnnSupport *dnn = parent_->AsDnn()) {
       CheckError(dnn->DoPoolForward(this, pooling_dimensions, input_dimensions,
-                                    input_data, output_dimensions,
-                                    output_data));
+                                    input_data, output_dimensions, output_data,
+                                    workspace_allocator));
     } else {
       SetErrorAndLogNoDnnSupport();
     }
@@ -1421,15 +1430,17 @@ Stream &Stream::ThenPoolForward(
     const dnn::BatchDescriptor &input_dimensions,
     const DeviceMemory<Eigen::half> &input_data,
     const dnn::BatchDescriptor &output_dimensions,
-    DeviceMemory<Eigen::half> *output_data) {
+    DeviceMemory<Eigen::half> *output_data,
+    ScratchAllocator *workspace_allocator) {
   VLOG_CALL(PARAM(pooling_dimensions), PARAM(input_dimensions),
-            PARAM(input_data), PARAM(output_dimensions), PARAM(output_data));
+            PARAM(input_data), PARAM(output_dimensions), PARAM(output_data),
+            PARAM(workspace_allocator));
 
   if (ok()) {
     if (dnn::DnnSupport *dnn = parent_->AsDnn()) {
       CheckError(dnn->DoPoolForward(this, pooling_dimensions, input_dimensions,
-                                    input_data, output_dimensions,
-                                    output_data));
+                                    input_data, output_dimensions, output_data,
+                                    workspace_allocator));
     } else {
       SetErrorAndLogNoDnnSupport();
     }
@@ -1444,16 +1455,19 @@ Stream &Stream::ThenPoolBackward(
     const dnn::BatchDescriptor &output_dimensions,
     const DeviceMemory<double> &output_data,
     const DeviceMemory<double> &input_diff_data,
-    DeviceMemory<double> *output_diff_data) {
+    DeviceMemory<double> *output_diff_data,
+    ScratchAllocator *workspace_allocator) {
   VLOG_CALL(PARAM(pooling_dimensions), PARAM(input_dimensions),
             PARAM(input_data), PARAM(output_dimensions), PARAM(output_data),
-            PARAM(input_diff_data), PARAM(output_diff_data));
+            PARAM(input_diff_data), PARAM(output_diff_data),
+            PARAM(workspace_allocator));
 
   if (ok()) {
     if (dnn::DnnSupport *dnn = parent_->AsDnn()) {
       CheckError(dnn->DoPoolBackward(this, pooling_dimensions, input_dimensions,
                                      input_data, output_dimensions, output_data,
-                                     input_diff_data, output_diff_data));
+                                     input_diff_data, output_diff_data,
+                                     workspace_allocator));
     } else {
       SetError();
       LOG(WARNING)
@@ -1471,16 +1485,19 @@ Stream &Stream::ThenPoolBackward(
     const dnn::BatchDescriptor &output_dimensions,
     const DeviceMemory<float> &output_data,
     const DeviceMemory<float> &input_diff_data,
-    DeviceMemory<float> *output_diff_data) {
+    DeviceMemory<float> *output_diff_data,
+    ScratchAllocator *workspace_allocator) {
   VLOG_CALL(PARAM(pooling_dimensions), PARAM(input_dimensions),
             PARAM(input_data), PARAM(output_dimensions), PARAM(output_data),
-            PARAM(input_diff_data), PARAM(output_diff_data));
+            PARAM(input_diff_data), PARAM(output_diff_data),
+            PARAM(workspace_allocator));
 
   if (ok()) {
     if (dnn::DnnSupport *dnn = parent_->AsDnn()) {
       CheckError(dnn->DoPoolBackward(this, pooling_dimensions, input_dimensions,
                                      input_data, output_dimensions, output_data,
-                                     input_diff_data, output_diff_data));
+                                     input_diff_data, output_diff_data,
+                                     workspace_allocator));
     } else {
       SetErrorAndLogNoDnnSupport();
     }
@@ -1495,16 +1512,19 @@ Stream &Stream::ThenPoolBackward(
     const dnn::BatchDescriptor &output_dimensions,
     const DeviceMemory<Eigen::half> &output_data,
     const DeviceMemory<Eigen::half> &input_diff_data,
-    DeviceMemory<Eigen::half> *output_diff_data) {
+    DeviceMemory<Eigen::half> *output_diff_data,
+    ScratchAllocator *workspace_allocator) {
   VLOG_CALL(PARAM(pooling_dimensions), PARAM(input_dimensions),
             PARAM(input_data), PARAM(output_dimensions), PARAM(output_data),
-            PARAM(input_diff_data), PARAM(output_diff_data));
+            PARAM(input_diff_data), PARAM(output_diff_data),
+            PARAM(workspace_allocator));
 
   if (ok()) {
     if (dnn::DnnSupport *dnn = parent_->AsDnn()) {
       CheckError(dnn->DoPoolBackward(this, pooling_dimensions, input_dimensions,
                                      input_data, output_dimensions, output_data,
-                                     input_diff_data, output_diff_data));
+                                     input_diff_data, output_diff_data,
+                                     workspace_allocator));
     } else {
       SetErrorAndLogNoDnnSupport();
     }
@@ -1551,16 +1571,18 @@ Stream &Stream::ThenNormalizeBackwardWithDimensions(
     const dnn::BatchDescriptor &dimensions, const DeviceMemory<float> &raw_data,
     const DeviceMemory<float> &normalized_data,
     const DeviceMemory<float> &normalized_variable_gradient,
-    DeviceMemory<float> *raw_variable_gradient) {
+    DeviceMemory<float> *raw_variable_gradient,
+    ScratchAllocator *workspace_allocator) {
   VLOG_CALL(PARAM(normalize_descriptor), PARAM(dimensions), PARAM(raw_data),
             PARAM(normalized_data), PARAM(normalized_variable_gradient),
-            PARAM(raw_variable_gradient));
+            PARAM(raw_variable_gradient), PARAM(workspace_allocator));
 
   if (ok()) {
     if (dnn::DnnSupport *dnn = parent_->AsDnn()) {
       CheckError(dnn->DoNormalizeBackwardWithDimensions(
           this, normalize_descriptor, dimensions, raw_data, normalized_data,
-          normalized_variable_gradient, raw_variable_gradient));
+          normalized_variable_gradient, raw_variable_gradient,
+          workspace_allocator));
     } else {
       SetErrorAndLogNoDnnSupport();
     }
@@ -1899,7 +1921,7 @@ Stream &Stream::ThenCopyDevice2HostBuffer(
 }
 
 Stream *Stream::GetOrCreateSubStream() {
-  mutex_lock lock{mu_};
+  mutex_lock lock(mu_);
   for (auto &stream : sub_streams_) {
     if (stream.second) {
       stream.second = false;
@@ -1916,7 +1938,7 @@ Stream *Stream::GetOrCreateSubStream() {
 }
 
 void Stream::ReturnSubStream(Stream *sub_stream) {
-  mutex_lock lock{mu_};
+  mutex_lock lock(mu_);
   for (auto &stream : sub_streams_) {
     if (stream.first.get() == sub_stream) {
       stream.second = true;
@@ -4482,6 +4504,40 @@ Stream &Stream::ThenBlasTrsm(blas::Side side, blas::UpperLower uplo,
 
 Stream &Stream::ThenBlasGemmBatched(
     blas::Transpose transa, blas::Transpose transb, uint64 m, uint64 n,
+    uint64 k, float alpha,
+    const port::ArraySlice<DeviceMemory<Eigen::half> *> &a, int lda,
+    const port::ArraySlice<DeviceMemory<Eigen::half> *> &b, int ldb, float beta,
+    const port::ArraySlice<DeviceMemory<Eigen::half> *> &c, int ldc,
+    int batch_count) {
+  return ThenBlasGemmBatchedWithScratch(transa, transb, m, n, k, alpha, a, lda,
+                                        b, ldb, beta, c, ldc, batch_count,
+                                        /*scratch_allocator=*/nullptr);
+}
+
+Stream &Stream::ThenBlasGemmBatchedWithScratch(
+    blas::Transpose transa, blas::Transpose transb, uint64 m, uint64 n,
+    uint64 k, float alpha,
+    const port::ArraySlice<DeviceMemory<Eigen::half> *> &a, int lda,
+    const port::ArraySlice<DeviceMemory<Eigen::half> *> &b, int ldb, float beta,
+    const port::ArraySlice<DeviceMemory<Eigen::half> *> &c, int ldc,
+    int batch_count, ScratchAllocator *scratch_allocator) {
+  VLOG_CALL(PARAM(transa), PARAM(transb), PARAM(m), PARAM(n), PARAM(k),
+            PARAM(alpha), PARAM(a), PARAM(lda), PARAM(b), PARAM(ldb),
+            PARAM(beta), PARAM(c), PARAM(ldc), PARAM(batch_count));
+
+  ThenBlasImpl<blas::Transpose, blas::Transpose, uint64, uint64, uint64, float,
+               const port::ArraySlice<DeviceMemory<Eigen::half> *> &, int,
+               const port::ArraySlice<DeviceMemory<Eigen::half> *> &, int,
+               float, const port::ArraySlice<DeviceMemory<Eigen::half> *> &,
+               int, int, ScratchAllocator *>
+      impl;
+  return impl(this, &blas::BlasSupport::DoBlasGemmBatched, transa, transb, m, n,
+              k, alpha, a, lda, b, ldb, beta, c, ldc, batch_count,
+              scratch_allocator);
+}
+
+Stream &Stream::ThenBlasGemmBatched(
+    blas::Transpose transa, blas::Transpose transb, uint64 m, uint64 n,
     uint64 k, float alpha, const port::ArraySlice<DeviceMemory<float> *> &a,
     int lda, const port::ArraySlice<DeviceMemory<float> *> &b, int ldb,
     float beta, const port::ArraySlice<DeviceMemory<float> *> &c, int ldc,
@@ -5193,24 +5249,11 @@ port::Status Stream::BlockHostUntilDone() {
     return status;
   }
 
-  port::Status first_error;
-  {
-    // Wait until all active sub-streams have done their tasks.
-    mutex_lock lock{mu_};
-    for (auto &stream : sub_streams_) {
-      if (!stream.second) {
-        first_error.Update(stream.first->BlockHostUntilDone());
-        // Set this sub-stream as available.
-        stream.second = true;
-      }
-    }
-  }
-
   temporary_memory_manager_.DeallocateFinalizedTemporaries();
 
-  first_error.Update(parent_->BlockHostUntilDone(this));
-  CheckError(first_error.ok());
-  return first_error;
+  port::Status error = parent_->BlockHostUntilDone(this);
+  CheckError(error.ok());
+  return error;
 }
 
 }  // namespace stream_executor

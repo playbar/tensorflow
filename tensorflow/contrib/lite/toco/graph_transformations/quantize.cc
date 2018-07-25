@@ -33,7 +33,7 @@ namespace {
 
 bool SupportsQuantization(const Operator& op) {
   auto type = op.type;
-  if (type == OperatorType::kTensorFlowUnsupported) {
+  if (type == OperatorType::kUnsupported) {
     auto* unsupported = static_cast<const TensorFlowUnsupportedOperator*>(&op);
     return unsupported->quantized;
   }
@@ -42,19 +42,26 @@ bool SupportsQuantization(const Operator& op) {
          type == OperatorType::kConcatenation ||
          type == OperatorType::kL2Normalization || type == OperatorType::kAdd ||
          type == OperatorType::kAveragePool || type == OperatorType::kMaxPool ||
-         type == OperatorType::kTensorFlowMinimum ||
-         type == OperatorType::kTensorFlowMaximum ||
+         type == OperatorType::kMinimum || type == OperatorType::kMaximum ||
          type == OperatorType::kLogistic || type == OperatorType::kSoftmax ||
-         type == OperatorType::kLogSoftmax ||
-         type == OperatorType::kTensorFlowSplit || type == OperatorType::kSub ||
+         type == OperatorType::kLogSoftmax || type == OperatorType::kSlice ||
+         type == OperatorType::kResizeBilinear ||
+         type == OperatorType::kSplit || type == OperatorType::kSub ||
          type == OperatorType::kSqueeze || type == OperatorType::kPad ||
-         type == OperatorType::kTensorFlowReshape ||
+         type == OperatorType::kPadV2 || type == OperatorType::kReshape ||
          type == OperatorType::kTanh || type == OperatorType::kMul ||
+         type == OperatorType::kBatchToSpaceND ||
+         type == OperatorType::kSpaceToBatchND ||
          type == OperatorType::kSpaceToDepth ||
          type == OperatorType::kStridedSlice ||
          type == OperatorType::kDepthToSpace ||
          type == OperatorType::kLstmCell || type == OperatorType::kGather ||
-         type == OperatorType::kTranspose || type == OperatorType::kMean;
+         type == OperatorType::kTranspose || type == OperatorType::kMean ||
+         type == OperatorType::kGreater ||
+         type == OperatorType::kGreaterEqual || type == OperatorType::kLess ||
+         type == OperatorType::kLessEqual || type == OperatorType::kSelect ||
+         type == OperatorType::kArgMax || type == OperatorType::kRelu ||
+         type == OperatorType::kRelu1 || type == OperatorType::kRelu6;
 }
 
 const MinMax& GetOrComputeMinMax(Model* model, const string& array_name) {
@@ -95,6 +102,11 @@ const MinMax& GetOrComputeMinMax(Model* model, const string& array_name) {
     for (auto val : data) {
       min = std::min(min, val);
       max = std::max(max, val);
+    }
+    if (min == 0.f && max == 0.f) {
+      // Prevent downstream anger from quantized math that expects min and max
+      // to not be equal.
+      max = 1.f;
     }
     auto& minmax = array.GetOrCreateMinMax();
     minmax.min = min;
@@ -201,13 +213,15 @@ bool ChooseQuantizationForOperatorInput(
   if (op.type == OperatorType::kLstmCell) {
     if (input_index == LstmCellOperator::PREV_STATE_INPUT) {
       *quantized_data_type = ArrayDataType::kInt16;
-      GetQuantizationParams(*quantized_data_type, minmax, quantization_params);
+      ChooseQuantizationParamsForArrayAndQuantizedDataType(
+          array, *quantized_data_type, quantization_params);
       return true;
     }
   }
 
   *quantized_data_type = GetQuantizedDataType(array, ArrayDataType::kUint8);
-  GetQuantizationParams(*quantized_data_type, minmax, quantization_params);
+  ChooseQuantizationParamsForArrayAndQuantizedDataType(
+      array, *quantized_data_type, quantization_params);
   transformation->AddMessageF(
       "For input array %s with min=%g, max=%g, chose to quantize as %s (f=%s) "
       "with zero_point=%d, scale=%g",
@@ -251,8 +265,7 @@ bool ChooseHardcodedQuantizationForOperatorOutput(
         IsExactlyRepresentable(0., *quantized_data_type, *quantization_params));
     return true;
   }
-  if ((op.type == OperatorType::kLogistic) ||
-      (op.type == OperatorType::kSoftmax)) {
+  if (op.type == OperatorType::kLogistic || op.type == OperatorType::kSoftmax) {
     // Logistic and Softmax have range: [0, 1].
     //
     // For Logistic, 0.5 should be exactly representable, as implementations
@@ -316,14 +329,15 @@ bool ChooseQuantizationForOperatorOutput(
         output, OperatorTypeName(op.type));
     return true;
   }
-  if ((op.type == OperatorType::kDepthToSpace) ||
-      (op.type == OperatorType::kSpaceToDepth) ||
-      (op.type == OperatorType::kTensorFlowReshape) ||
-      (op.type == OperatorType::kTensorFlowSplit) ||
-      (op.type == OperatorType::kConcatenation &&
-       model->flags.change_concat_input_ranges())) {
+  if ((op.type == OperatorType::kConcatenation &&
+       model->flags.change_concat_input_ranges()) ||
+      op.type == OperatorType::kDepthToSpace ||
+      op.type == OperatorType::kSpaceToDepth ||
+      op.type == OperatorType::kReshape || op.type == OperatorType::kSplit ||
+      op.type == OperatorType::kRelu || op.type == OperatorType::kRelu1 ||
+      op.type == OperatorType::kRelu6) {
     int data_input_index = 0;
-    if (op.type == OperatorType::kTensorFlowSplit) {
+    if (op.type == OperatorType::kSplit) {
       data_input_index = 1;
     }
     // Copying and rearrangement ops should preserve the quantization parameters
@@ -347,12 +361,14 @@ bool ChooseQuantizationForOperatorOutput(
     if (output_index == LstmCellOperator::STATE_OUTPUT ||
         output_index == LstmCellOperator::ACTIV_TEMP) {
       *quantized_data_type = ArrayDataType::kInt16;
-      GetQuantizationParams(*quantized_data_type, minmax, quantization_params);
+      ChooseQuantizationParamsForArrayAndQuantizedDataType(
+          array, *quantized_data_type, quantization_params);
       return true;
     }
   }
   *quantized_data_type = GetQuantizedDataType(array, ArrayDataType::kUint8);
-  GetQuantizationParams(*quantized_data_type, minmax, quantization_params);
+  ChooseQuantizationParamsForArrayAndQuantizedDataType(
+      array, *quantized_data_type, quantization_params);
   transformation->AddMessageF(
       "For output array %s with min=%g, max=%g"
       ", chose to quantize as %s with zero_point=%d"
@@ -496,36 +512,47 @@ bool Quantize::Run(Model* model, std::size_t op_index) {
           // Check if the output of that Dequantize op was not used by any
           // other operator. We will then erase that Dequantize op.
           if (!CountOpsWithInput(*model, dequantize_op->outputs[0])) {
-            // If any of the model's output_arrays was pointing to the
-            // Dequantize op's output, let it point to the Dequantize op's
-            // input instead.
-            for (int i = 0; i < model->flags.output_arrays_size(); i++) {
-              if (model->flags.output_arrays(i) == dequantize_op->outputs[0]) {
-                // TODO(b/78013785): never rename output arrays.
-                if (IsInputArray(*model, dequantize_op->inputs[0])) {
-                  // The op input is an input array and the output is an output
-                  // array and we can't have an array be both. Insert a copy
-                  // op to ensure the two arrays stay separate.
-                  AddMessageF(
-                      "Tried to rename output array %d while removing dequant "
-                      "op %s but array is also an input; inserting copy %s "
-                      "-> %s",
-                      i, LogName(*dequantize_op), model->flags.output_arrays(i),
-                      dequantize_op->inputs[0]);
-                  InsertCopyOperator(model, dequantize_op->inputs[0],
-                                     dequantize_op->outputs[0]);
-                } else {
-                  // Op output is strictly used as an output array, so we can
-                  // just rename the array and directly bypass the op.
-                  AddMessageF(
-                      "Renaming output array %d after removing dequant op %s: "
-                      "%s -> %s",
-                      i, LogName(*dequantize_op), model->flags.output_arrays(i),
-                      dequantize_op->inputs[0]);
-                  model->flags.set_output_arrays(i, dequantize_op->inputs[0]);
-                  model->EraseArray(dequantize_op->outputs[0]);
+            if (IsDiscardableArray(*model, dequantize_op->outputs[0])) {
+              // Usual case: we can just discard the dequantize output.
+              model->EraseArray(dequantize_op->outputs[0]);
+            } else {
+              // The dequantize output is not discardable. Special care needed.
+              // If any of the model's output_arrays was pointing to the
+              // Dequantize op's output, let it point to the Dequantize op's
+              // input instead.
+              for (int i = 0; i < model->flags.output_arrays_size(); i++) {
+                if (model->flags.output_arrays(i) ==
+                    dequantize_op->outputs[0]) {
+                  // TODO(b/78013785): never rename output arrays.
+                  if (IsInputArray(*model, dequantize_op->inputs[0])) {
+                    // The op input is an input array and the output is an
+                    // output array and we can't have an array be both. Insert a
+                    // copy op to ensure the two arrays stay separate.
+                    AddMessageF(
+                        "Tried to rename output array %d while removing "
+                        "dequant "
+                        "op %s but array is also an input; inserting copy %s "
+                        "-> %s",
+                        i, LogName(*dequantize_op),
+                        model->flags.output_arrays(i),
+                        dequantize_op->inputs[0]);
+                    InsertCopyOperator(model, dequantize_op->inputs[0],
+                                       dequantize_op->outputs[0]);
+                  } else {
+                    // Op output is strictly used as an output array, so we can
+                    // just rename the array and directly bypass the op.
+                    AddMessageF(
+                        "Renaming output array %d after removing dequant op "
+                        "%s: "
+                        "%s -> %s",
+                        i, LogName(*dequantize_op),
+                        model->flags.output_arrays(i),
+                        dequantize_op->inputs[0]);
+                    model->flags.set_output_arrays(i, dequantize_op->inputs[0]);
+                    model->EraseArray(dequantize_op->outputs[0]);
+                  }
+                  break;
                 }
-                break;
               }
             }
             model->operators.erase(dequantize_it);

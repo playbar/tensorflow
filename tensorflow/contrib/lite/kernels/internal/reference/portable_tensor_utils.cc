@@ -29,9 +29,18 @@ float PortableClip(float f, float abs_limit) {
   return result;
 }
 
+bool PortableIsZeroVector(const float* vector, int v_size) {
+  for (int i = 0; i < v_size; ++i) {
+    if (*vector++ != 0.0f) return false;
+  }
+  return true;
+}
+
 void PortableSymmetricQuantizeFloats(const float* values, const int size,
-                                     int8_t* quantized_values, float* min,
-                                     float* max, float* scaling_factor) {
+                                     int8_t* quantized_values,
+                                     float* __restrict__ min,
+                                     float* __restrict__ max,
+                                     float* __restrict__ scaling_factor) {
   auto minmax = std::minmax_element(values, values + size);
   *min = *minmax.first;
   *max = *minmax.second;
@@ -42,10 +51,11 @@ void PortableSymmetricQuantizeFloats(const float* values, const int size,
     *scaling_factor = 1;
     return;
   }
-  *scaling_factor = kScale / range;
+  *scaling_factor = range / kScale;
+  const float scaling_factor_inv = 1.0f / *scaling_factor;
   for (int i = 0; i < size; ++i) {
     const int32_t quantized_value =
-        static_cast<int32_t>(TfLiteRound(*scaling_factor * values[i]));
+        static_cast<int32_t>(TfLiteRound(values[i] * scaling_factor_inv));
     // Clamp: just in case some odd numeric offset.
     quantized_values[i] = std::min(kScale, std::max(-kScale, quantized_value));
   }
@@ -67,6 +77,31 @@ void PortableMatrixBatchVectorMultiplyAccumulate(const float* matrix,
       result_in_batch += result_stride;
     }
   }
+}
+
+void PortableMatrixBatchVectorMultiplyAccumulate(
+    const int8_t* __restrict__ matrix, const int m_rows, const int m_cols,
+    const int8_t* __restrict__ vectors,
+    const float* __restrict__ scaling_factors, int n_batch,
+    float* __restrict__ result, int result_stride) {
+  int batch, row, col;
+  for (batch = 0; batch < n_batch; ++batch, vectors += m_cols) {
+    const float batch_scaling_factor = scaling_factors[batch];
+    // Get the address of the first row.
+    const int8_t* row_ptr = matrix;
+    for (row = 0; row < m_rows; ++row, result += result_stride) {
+      // Initialize the dot product sum for the row to 0.
+      int32_t dotprod = 0;
+      // Prefetch the row to cache.
+      __builtin_prefetch(row_ptr, 0 /* prefetch for read */,
+                         3 /* temporal locality */);
+      // For every block of 16 8-bit elements (128-bit register) from each row.
+      for (col = 0; col < m_cols; ++col, ++row_ptr) {
+        dotprod += (*row_ptr) * (vectors[col]);
+      }  // for col
+      *result += (dotprod * batch_scaling_factor);
+    }  // for row
+  }    // for batch
 }
 
 void PortableVectorVectorCwiseProduct(const float* vector1,
@@ -158,6 +193,13 @@ void PortableSub1Vector(const float* vector, int v_size, float* result) {
 
 void PortableZeroVector(float* vector, int v_size) {
   memset(vector, 0, v_size * sizeof(float));
+}
+
+void PortableVectorScalarMultiply(const int8_t* vector, const int v_size,
+                                  const float scale, float* result) {
+  for (int v = 0; v < v_size; ++v) {
+    *result++ = scale * *vector++;
+  }
 }
 
 void PortableClipVector(const float* vector, int v_size, float abs_limit,

@@ -78,7 +78,7 @@ training CIFAR-10 illustrates the use of the `tf.data` API along with
 The `tf.data` API utilizes C++ multi-threading and has a much lower overhead
 than the Python-based `queue_runner` that is limited by Python's multi-threading
 performance. A detailed performance guide for the `tf.data` API can be found
-[here](@{$datasets_performance}).
+@{$datasets_performance$here}.
 
 While feeding data using a `feed_dict` offers a high level of flexibility, in
 general `feed_dict` does not provide a scalable solution. If only a single GPU
@@ -464,7 +464,7 @@ equal to the number of physical cores rather than logical cores.
   config = tf.ConfigProto()
   config.intra_op_parallelism_threads = 44
   config.inter_op_parallelism_threads = 44
-  tf.session(config=config)
+  tf.Session(config=config)
 
 ```
 
