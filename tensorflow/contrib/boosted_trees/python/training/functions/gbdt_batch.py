@@ -22,7 +22,6 @@ import collections
 import copy
 
 from tensorflow.contrib import learn
-from tensorflow.contrib import stateless
 from tensorflow.contrib.boosted_trees.lib.learner.batch import categorical_split_handler
 from tensorflow.contrib.boosted_trees.lib.learner.batch import ordinal_split_handler
 from tensorflow.contrib.boosted_trees.proto import learner_pb2
@@ -44,12 +43,14 @@ from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import gradients_impl
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import stateless_random_ops as stateless
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import variables
 from tensorflow.python.ops.losses import losses
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.summary import summary
 from tensorflow.python.training import device_setter
+
 
 # Key names for prediction dict.
 ENSEMBLE_STAMP = "ensemble_stamp"
@@ -217,6 +218,21 @@ def extract_features(features, feature_columns, use_core_columns):
   sparse_int_shapes = []
   for key in sorted(features.keys()):
     tensor = features[key]
+    # TODO(nponomareva): consider iterating over feature columns instead.
+    if isinstance(tensor, tuple):
+      # Weighted categorical feature.
+      categorical_tensor = tensor[0]
+      weight_tensor = tensor[1]
+
+      shape = categorical_tensor.dense_shape
+      indices = array_ops.concat([
+          array_ops.slice(categorical_tensor.indices, [0, 0], [-1, 1]),
+          array_ops.expand_dims(
+              math_ops.to_int64(categorical_tensor.values), -1)
+      ], 1)
+      tensor = sparse_tensor.SparseTensor(
+          indices=indices, values=weight_tensor.values, dense_shape=shape)
+
     if isinstance(tensor, sparse_tensor.SparseTensor):
       if tensor.values.dtype == dtypes.float32:
         sparse_float_names.append(key)
@@ -288,7 +304,8 @@ class GradientBoostedDecisionTreeModel(object):
                feature_columns=None,
                use_core_columns=False,
                output_leaf_index=False,
-               output_leaf_index_modes=None):
+               output_leaf_index_modes=None,
+               num_quantiles=100):
     """Construct a new GradientBoostedDecisionTreeModel function.
 
     Args:
@@ -311,6 +328,7 @@ class GradientBoostedDecisionTreeModel(object):
       output_leaf_index_modes: A list of modes from (TRAIN, EVAL, INFER) which
         dictates when leaf indices will be outputted. By default, leaf indices
         are only outputted in INFER mode.
+      num_quantiles: Number of quantiles to build for numeric feature values.
 
     Raises:
       ValueError: if inputs are not valid.
@@ -353,6 +371,9 @@ class GradientBoostedDecisionTreeModel(object):
       self._gradient_shape = tensor_shape.scalar()
       self._hessian_shape = tensor_shape.scalar()
     else:
+      if center_bias:
+        raise ValueError("Center bias should be False for multiclass.")
+
       self._gradient_shape = tensor_shape.TensorShape([logits_dimension])
       if (learner_config.multi_class_strategy ==
           learner_pb2.LearnerConfig.FULL_HESSIAN):
@@ -365,9 +386,20 @@ class GradientBoostedDecisionTreeModel(object):
         learner_pb2.LearnerConfig.GROWING_MODE_UNSPECIFIED):
       learner_config.growing_mode = learner_pb2.LearnerConfig.LAYER_BY_LAYER
 
+    if (learner_config.weak_learner_type == learner_pb2.LearnerConfig
+        .OBLIVIOUS_DECISION_TREE and learner_config.pruning_mode == learner_pb2
+        .LearnerConfig.PRUNING_MODE_UNSPECIFIED):
+      learner_config.pruning_mode = learner_pb2.LearnerConfig.PRE_PRUNE
+
     if (learner_config.pruning_mode ==
         learner_pb2.LearnerConfig.PRUNING_MODE_UNSPECIFIED):
       learner_config.pruning_mode = learner_pb2.LearnerConfig.POST_PRUNE
+
+    if (learner_config.weak_learner_type == learner_pb2.LearnerConfig
+        .OBLIVIOUS_DECISION_TREE and
+        learner_config.pruning_mode == learner_pb2.LearnerConfig.POST_PRUNE):
+      raise ValueError(
+          "Post pruning is not implmented for oblivious decision trees.")
 
     if learner_config.constraints.max_tree_depth == 0:
       # Use 6 as the default maximum depth.
@@ -380,11 +412,14 @@ class GradientBoostedDecisionTreeModel(object):
     self._learner_config = learner_config
     self._feature_columns = feature_columns
     self._learner_config_serialized = learner_config.SerializeToString()
-    self._attempted_trees = variables.Variable(
+    self._num_quantiles = num_quantiles
+    self._max_tree_depth = variables.VariableV1(
+        initial_value=self._learner_config.constraints.max_tree_depth)
+    self._attempted_trees = variables.VariableV1(
         initial_value=array_ops.zeros([], dtypes.int64),
         trainable=False,
         name="attempted_trees")
-    self._finalized_trees = variables.Variable(
+    self._finalized_trees = variables.VariableV1(
         initial_value=array_ops.zeros([], dtypes.int64),
         trainable=False,
         name="finalized_trees")
@@ -394,6 +429,11 @@ class GradientBoostedDecisionTreeModel(object):
      sparse_float_shapes, sparse_int_indices,
      sparse_int_values, sparse_int_shapes) = extract_features(
          features, self._feature_columns, use_core_columns)
+    if (learner_config.weak_learner_type == learner_pb2.LearnerConfig
+        .OBLIVIOUS_DECISION_TREE and sparse_float_indices):
+      raise ValueError("Oblivious trees don't handle sparse float features yet."
+                      )
+
     logging.info("Active Feature Columns: " + str(fc_names))
     logging.info("Learner config: " + str(learner_config))
     self._fc_names = fc_names
@@ -520,9 +560,6 @@ class GradientBoostedDecisionTreeModel(object):
     if not input_deps:
       raise ValueError("No input tensors for prediction.")
 
-    if any(i.device != input_deps[0].device for i in input_deps):
-      raise ValueError("All input tensors should be on the same device.")
-
     # Get most current model stamp.
     ensemble_stamp = model_ops.tree_ensemble_stamp_token(self._ensemble_handle)
 
@@ -577,13 +614,19 @@ class GradientBoostedDecisionTreeModel(object):
           predictions_dict[NUM_TREES_ATTEMPTED] % self._logits_dimension)
     return constant_op.constant(-1, dtype=dtypes.int32)
 
-  def update_stats(self, loss, predictions_dict):
+  def update_stats(self, loss, predictions_dict, gradients=None, hessians=None):
     """Update the accumulators with stats from this batch.
 
     Args:
       loss: A scalar tensor representing average loss of examples.
       predictions_dict: Dictionary of Rank 2 `Tensor` representing information
           about predictions per example.
+      gradients: A tensor with the gradients with the respect to logits from
+        predictions_dict. If not provided, tensorflow will do
+        autodifferentiation.
+      hessians: A tensor with the hessians with the respect to logits from
+        predictions_dict. If not provided, tensorflow will do
+        autodifferentiation.
 
     Returns:
       Three values:
@@ -605,13 +648,14 @@ class GradientBoostedDecisionTreeModel(object):
     predictions = predictions_dict[PREDICTIONS]
     partition_ids = predictions_dict[PARTITION_IDS]
     ensemble_stamp = predictions_dict[ENSEMBLE_STAMP]
-    gradients = gradients_impl.gradients(
-        loss,
-        predictions,
-        name="Gradients",
-        colocate_gradients_with_ops=False,
-        gate_gradients=0,
-        aggregation_method=None)[0]
+    if gradients is None:
+      gradients = gradients_impl.gradients(
+          loss,
+          predictions,
+          name="Gradients",
+          colocate_gradients_with_ops=False,
+          gate_gradients=0,
+          aggregation_method=None)[0]
     strategy = self._learner_config.multi_class_strategy
 
     class_id = self._get_class_id(predictions_dict)
@@ -620,17 +664,20 @@ class GradientBoostedDecisionTreeModel(object):
       # We build one vs rest trees.
       if self._logits_dimension == 1:
         # We have only 1 score, gradients is of shape [batch, 1].
-        hessians = gradients_impl.gradients(
-            gradients,
-            predictions,
-            name="Hessian",
-            colocate_gradients_with_ops=False,
-            gate_gradients=0,
-            aggregation_method=None)[0]
+        if hessians is None:
+          hessians = gradients_impl.gradients(
+              gradients,
+              predictions,
+              name="Hessian",
+              colocate_gradients_with_ops=False,
+              gate_gradients=0,
+              aggregation_method=None)[0]
 
         squeezed_gradients = array_ops.squeeze(gradients, axis=[1])
         squeezed_hessians = array_ops.squeeze(hessians, axis=[1])
       else:
+        if hessians is not None:
+          raise ValueError("Providing hessians is not yet supported here.")
         hessian_list = self._diagonal_hessian(gradients, predictions)
         # Assemble hessian list into a tensor.
         hessians = array_ops.stack(hessian_list, axis=1)
@@ -641,6 +688,8 @@ class GradientBoostedDecisionTreeModel(object):
         squeezed_hessians = array_ops.squeeze(
             _get_column_by_index(hessians, class_id))
     else:
+      if hessians is not None:
+        raise ValueError("Providing hessians is not yet supported here.")
       # Other multiclass strategies.
       if strategy == learner_pb2.LearnerConfig.FULL_HESSIAN:
         hessian_list = self._full_hessian(gradients, predictions)
@@ -669,8 +718,10 @@ class GradientBoostedDecisionTreeModel(object):
         self._learner_config.constraints.min_node_weight, dtypes.float32)
     loss_uses_sum_reduction = self._loss_reduction == losses.Reduction.SUM
     loss_uses_sum_reduction = constant_op.constant(loss_uses_sum_reduction)
-    epsilon = 0.01
-    num_quantiles = 100
+    weak_learner_type = constant_op.constant(
+        self._learner_config.weak_learner_type)
+    num_quantiles = self._num_quantiles
+    epsilon = 1.0 / num_quantiles
     strategy_tensor = constant_op.constant(strategy)
     with ops.device(self._get_replica_device_setter(worker_device)):
       # Create handlers for dense float columns
@@ -693,6 +744,7 @@ class GradientBoostedDecisionTreeModel(object):
                 multiclass_strategy=strategy_tensor,
                 init_stamp_token=init_stamp_token,
                 loss_uses_sum_reduction=loss_uses_sum_reduction,
+                weak_learner_type=weak_learner_type,
             ))
         fc_name_idx += 1
 
@@ -741,32 +793,33 @@ class GradientBoostedDecisionTreeModel(object):
                 hessian_shape=self._hessian_shape,
                 multiclass_strategy=strategy_tensor,
                 init_stamp_token=init_stamp_token,
-                loss_uses_sum_reduction=loss_uses_sum_reduction))
+                loss_uses_sum_reduction=loss_uses_sum_reduction,
+                weak_learner_type=weak_learner_type))
         fc_name_idx += 1
 
       # Create ensemble stats variables.
-      num_layer_examples = variables.Variable(
+      num_layer_examples = variables.VariableV1(
           initial_value=array_ops.zeros([], dtypes.int64),
           name="num_layer_examples",
           trainable=False)
-      num_layer_steps = variables.Variable(
+      num_layer_steps = variables.VariableV1(
           initial_value=array_ops.zeros([], dtypes.int64),
           name="num_layer_steps",
           trainable=False)
-      num_layers = variables.Variable(
+      num_layers = variables.VariableV1(
           initial_value=array_ops.zeros([], dtypes.int64),
           name="num_layers",
           trainable=False)
-      active_tree = variables.Variable(
+      active_tree = variables.VariableV1(
           initial_value=array_ops.zeros([], dtypes.int64),
           name="active_tree",
           trainable=False)
-      active_layer = variables.Variable(
+      active_layer = variables.VariableV1(
           initial_value=array_ops.zeros([], dtypes.int64),
           name="active_layer",
           trainable=False)
       # Variable that becomes false once bias centering is done.
-      continue_centering = variables.Variable(
+      continue_centering = variables.VariableV1(
           initial_value=self._center_bias,
           name="continue_centering",
           trainable=False)
@@ -794,9 +847,9 @@ class GradientBoostedDecisionTreeModel(object):
     stats_update_ops.append(
         control_flow_ops.cond(
             continue_centering,
-            self._make_update_bias_stats_fn(
-                ensemble_stamp, predictions, gradients,
-                bias_stats_accumulator), control_flow_ops.no_op))
+            self._make_update_bias_stats_fn(ensemble_stamp, predictions,
+                                            gradients, bias_stats_accumulator,
+                                            hessians), control_flow_ops.no_op))
 
     # Update handler stats.
     handler_reads = collections.OrderedDict()
@@ -856,9 +909,9 @@ class GradientBoostedDecisionTreeModel(object):
     empty_hess_shape = [1] + self._hessian_shape.as_list()
     empty_grad_shape = [1] + self._gradient_shape.as_list()
 
-    empty_gradients = constant_op.constant(
+    empty_gradients = constant_op.constant_v1(
         [], dtype=dtypes.float32, shape=empty_grad_shape)
-    empty_hessians = constant_op.constant(
+    empty_hessians = constant_op.constant_v1(
         [], dtype=dtypes.float32, shape=empty_hess_shape)
 
     active_handlers = array_ops.unstack(active_handlers, axis=0)
@@ -896,7 +949,7 @@ class GradientBoostedDecisionTreeModel(object):
 
       reset_ops = []
       for handler in handlers:
-        reset_ops.append(handler.make_splits(stamp_token, next_stamp_token, 0))
+        reset_ops.append(handler.reset(stamp_token, next_stamp_token))
       if self._center_bias:
         reset_ops.append(
             bias_stats_accumulator.flush(stamp_token, next_stamp_token))
@@ -951,7 +1004,7 @@ class GradientBoostedDecisionTreeModel(object):
 
         # Get accumulated steps and examples for the current layer.
         _, _, _, _, acc_examples, acc_steps = (
-            steps_accumulator.serialize())
+            steps_accumulator.saveable.serialize())
         acc_examples = math_ops.cast(acc_examples[0], dtypes.int64)
         acc_steps = math_ops.cast(acc_steps[0], dtypes.int64)
         ensemble_update_ops.append(
@@ -1042,6 +1095,12 @@ class GradientBoostedDecisionTreeModel(object):
         # Grow the ensemble given the current candidates.
         sizes = array_ops.unstack(split_sizes)
         partition_ids_list = list(array_ops.split(partition_ids, sizes, axis=0))
+        # When using the oblivious decision tree as weak learner, it produces
+        # one gain and one split per handler and not number of partitions.
+        if self._learner_config.weak_learner_type == (
+            learner_pb2.LearnerConfig.OBLIVIOUS_DECISION_TREE):
+          sizes = len(training_state.handlers)
+
         gains_list = list(array_ops.split(gains, sizes, axis=0))
         split_info_list = list(array_ops.split(split_infos, sizes, axis=0))
         return training_ops.grow_tree_ensemble(
@@ -1054,7 +1113,9 @@ class GradientBoostedDecisionTreeModel(object):
             splits=split_info_list,
             learner_config=self._learner_config_serialized,
             dropout_seed=dropout_seed,
-            center_bias=self._center_bias)
+            center_bias=self._center_bias,
+            max_tree_depth=self._max_tree_depth,
+            weak_learner_type=self._learner_config.weak_learner_type)
 
       def _grow_ensemble_not_ready_fn():
         # Don't grow the ensemble, just update the stamp.
@@ -1068,7 +1129,9 @@ class GradientBoostedDecisionTreeModel(object):
             splits=[],
             learner_config=self._learner_config_serialized,
             dropout_seed=dropout_seed,
-            center_bias=self._center_bias)
+            center_bias=self._center_bias,
+            max_tree_depth=self._max_tree_depth,
+            weak_learner_type=self._learner_config.weak_learner_type)
 
       def _grow_ensemble_fn():
         # Conditionally grow an ensemble depending on whether the splits
@@ -1108,7 +1171,11 @@ class GradientBoostedDecisionTreeModel(object):
   def get_number_of_trees_tensor(self):
     return self._finalized_trees, self._attempted_trees
 
-  def train(self, loss, predictions_dict, labels):
+  def get_max_tree_depth(self):
+    return self._max_tree_depth
+
+  def train(self, loss, predictions_dict, labels, gradients=None,
+            hessians=None):
     """Updates the accumalator stats and grows the ensemble.
 
     Args:
@@ -1117,6 +1184,12 @@ class GradientBoostedDecisionTreeModel(object):
           about predictions per example.
       labels: Rank 2 `Tensor` representing labels per example. Has no effect
           on the training and is only kept for backward compatibility.
+      gradients: A tensor with the gradients with the respect to logits from
+        predictions_dict. If not provided, tensorflow will do
+        autodifferentiation.
+      hessians: A tensor with the hessians with the respect to logits from
+        predictions_dict. If not provided, tensorflow will do
+        autodifferentiation.
 
     Returns:
       An op that adds a new tree to the ensemble.
@@ -1125,7 +1198,8 @@ class GradientBoostedDecisionTreeModel(object):
       ValueError: if inputs are not valid.
     """
     del labels  # unused; kept for backward compatibility.
-    update_op, _, training_state = self.update_stats(loss, predictions_dict)
+    update_op, _, training_state = self.update_stats(loss, predictions_dict,
+                                                     gradients, hessians)
     with ops.control_dependencies(update_op):
       return self.increment_step_counter_and_maybe_update_ensemble(
           predictions_dict, training_state)
@@ -1203,13 +1277,12 @@ class GradientBoostedDecisionTreeModel(object):
   def _get_replica_device_setter(self, worker_device):
     """Creates a replica device setter."""
     ps_tasks = self._num_ps_replicas
-    ps_ops = [
-        "Variable",
-        "VariableV2",
+    ps_ops = list(device_setter.STANDARD_PS_OPS)
+    ps_ops.extend([
         "DecisionTreeEnsembleResourceHandleOp",
         "StatsAccumulatorScalarResourceHandleOp",
         "StatsAccumulatorTensorResourceHandleOp",
-    ]
+    ])
     ps_strategy = _OpRoundRobinStrategy(ps_ops, ps_tasks)
     return device_setter.replica_device_setter(
         worker_device=worker_device,
@@ -1218,21 +1291,28 @@ class GradientBoostedDecisionTreeModel(object):
         ps_ops=ps_ops,
         ps_strategy=ps_strategy)
 
-  def _make_update_bias_stats_fn(self, ensemble_stamp, predictions, gradients,
-                                 bias_stats_accumulator):
+  def _make_update_bias_stats_fn(self,
+                                 ensemble_stamp,
+                                 predictions,
+                                 gradients,
+                                 bias_stats_accumulator,
+                                 hessians=None):
     """A method to create the function which updates the bias stats."""
 
     def _update_bias_stats():
       """A method to update the bias stats."""
       # Get reduced gradients and hessians.
       grads_sum = math_ops.reduce_sum(gradients, 0)
-      hess = gradients_impl.gradients(
-          grads_sum,
-          predictions,
-          name="Hessians",
-          colocate_gradients_with_ops=False,
-          gate_gradients=0,
-          aggregation_method=None)[0]
+      if hessians is not None:
+        hess = hessians
+      else:
+        hess = gradients_impl.gradients(
+            grads_sum,
+            predictions,
+            name="Hessians",
+            colocate_gradients_with_ops=False,
+            gate_gradients=0,
+            aggregation_method=None)[0]
       hess_sum = math_ops.reduce_sum(hess, 0)
 
       # Accumulate gradients and hessians.

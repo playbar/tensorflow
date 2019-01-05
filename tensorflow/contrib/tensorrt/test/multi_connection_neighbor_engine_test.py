@@ -25,8 +25,6 @@ from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import gen_math_ops
-from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn
 from tensorflow.python.platform import test
 
@@ -38,6 +36,7 @@ class MultiConnectionNeighborEngineTest(trt_test.TfTrtIntegrationTestBase):
     dtype = dtypes.float32
     input_name = "input"
     input_dims = [2, 3, 7, 5]
+    output_name = "output"
     g = ops.Graph()
     with g.as_default():
       x = array_ops.placeholder(dtype=dtype, shape=input_dims, name=input_name)
@@ -59,28 +58,30 @@ class MultiConnectionNeighborEngineTest(trt_test.TfTrtIntegrationTestBase):
       b = constant_op.constant(
           np.random.normal(5.0, 1.0, [1, 4, 1, 1]), name="bias", dtype=dtype)
       q = conv - b
-      edge = math_ops.sigmoid(q)
+      edge = self.trt_incompatible_op(q)
 
       b = constant_op.constant(
           np.random.normal(5.0, 1.0, [1, 4, 1, 1]), name="bias", dtype=dtype)
       d = b + conv
-      edge3 = math_ops.sigmoid(d)
+      edge3 = self.trt_incompatible_op(d)
 
-      edge1 = gen_math_ops.tan(conv)
+      edge1 = self.trt_incompatible_op(conv)
       t = t - edge1
       q = q + edge
       t = t + q
       t = t + d
       t = t - edge3
-      array_ops.squeeze(t, name=self.output_name)
+      array_ops.squeeze(t, name=output_name)
     return trt_test.TfTrtIntegrationTestParams(
         gdef=g.as_graph_def(),
         input_names=[input_name],
         input_dims=[input_dims],
-        num_expected_engines=2,
-        expected_output_dims=(2, 4, 5, 4),
-        allclose_atol=1.e-03,
-        allclose_rtol=1.e-03)
+        output_names=[output_name],
+        expected_output_dims=[(2, 4, 5, 4)])
+
+  def ExpectedEnginesToBuild(self, run_params):
+    """Return the expected engines to build."""
+    return ["TRTEngineOp_0", "TRTEngineOp_1"]
 
 
 if __name__ == "__main__":

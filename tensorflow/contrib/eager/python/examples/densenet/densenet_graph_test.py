@@ -119,7 +119,8 @@ class DensenetBenchmark(tf.test.Benchmark):
       with tf.Graph().as_default():
         np_images, np_labels = random_batch(batch_size)
         dataset = tf.data.Dataset.from_tensors((np_images, np_labels)).repeat()
-        (images, labels) = dataset.make_one_shot_iterator().get_next()
+        (images, labels) = tf.compat.v1.data.make_one_shot_iterator(
+            dataset).get_next()
 
         model = densenet.DenseNet(self.depth, self.growth_rate, self.num_blocks,
                                   self.output_classes,
@@ -128,8 +129,10 @@ class DensenetBenchmark(tf.test.Benchmark):
                                   weight_decay=1e-4, dropout_rate=0,
                                   pool_initial=True, include_top=True)
         logits = model(images, training=True)
-        loss = tf.losses.softmax_cross_entropy(
+        cross_ent = tf.losses.softmax_cross_entropy(
             logits=logits, onehot_labels=labels)
+        regularization = tf.add_n(model.losses)
+        loss = cross_ent + regularization
         optimizer = tf.train.GradientDescentOptimizer(learning_rate=1.0)
         train_op = optimizer.minimize(loss)
 

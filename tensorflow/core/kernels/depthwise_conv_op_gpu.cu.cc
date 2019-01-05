@@ -17,7 +17,7 @@ limitations under the License.
 #define EIGEN_USE_GPU
 
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
-#include "external/cub_archive/cub/util_ptx.cuh"
+#include "third_party/cub/util_ptx.cuh"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/kernels/depthwise_conv_op.h"
 #include "tensorflow/core/platform/types.h"
@@ -175,7 +175,7 @@ __global__ __launch_bounds__(1024, 2) void DepthwiseConv2dGPUKernelNHWCSmall(
   assert(CanLaunchDepthwiseConv2dGPUSmall(args));
   // Holds block plus halo and filter data for blockDim.x depths.
   extern __shared__ __align__(8) unsigned char shared_memory[];
-  static_assert(sizeof(S) <= 8, "Insufficient alignement detected");
+  static_assert(sizeof(S) <= 8, "Insufficient alignment detected");
   S* const shared_data = reinterpret_cast<S*>(shared_memory);
 
   const int num_batches = args.batch;
@@ -459,7 +459,7 @@ __global__ __launch_bounds__(1024, 2) void DepthwiseConv2dGPUKernelNCHWSmall(
   assert(CanLaunchDepthwiseConv2dGPUSmall(args));
   // Holds block plus halo and filter data for blockDim.z depths.
   extern __shared__ __align__(8) unsigned char shared_memory[];
-  static_assert(sizeof(S) <= 8, "Insufficient alignement detected");
+  static_assert(sizeof(S) <= 8, "Insufficient alignment detected");
   S* const shared_data = reinterpret_cast<S*>(shared_memory);
 
   const int num_batches = args.batch;
@@ -764,7 +764,7 @@ Status LaunchDepthwiseConv2dGPU(OpKernelContext* ctx, const DepthwiseArgs& args,
   const int max_block_count = kKnownFilterWidth < 0 || kKnownFilterHeight < 0 ||
                                       kKnownDepthMultiplier < 0
                                   ? std::numeric_limits<int>::max()
-                                  : device.getNumCudaMultiProcessors();
+                                  : device.getNumGpuMultiProcessors();
   kernel<<<std::min(max_block_count, config.block_count),
            config.thread_per_block, 0, device.stream()>>>(args, input, filter,
                                                           output, num_outputs);
@@ -1176,7 +1176,7 @@ __launch_bounds__(1024, 2) void DepthwiseConv2dBackpropFilterGPUKernelNHWCSmall(
   assert(CanLaunchDepthwiseConv2dBackpropFilterGPUSmall(args, blockDim.z));
   // Holds block plus halo and filter data for blockDim.x depths.
   extern __shared__ __align__(8) unsigned char shared_memory[];
-  static_assert(sizeof(S) <= 8, "Insufficient alignement detected");
+  static_assert(sizeof(S) <= 8, "Insufficient alignment detected");
   S* const shared_data = reinterpret_cast<S*>(shared_memory);
 
   const int num_batches = args.batch;
@@ -1448,7 +1448,7 @@ __launch_bounds__(1024, 2) void DepthwiseConv2dBackpropFilterGPUKernelNCHWSmall(
   assert(CanLaunchDepthwiseConv2dBackpropFilterGPUSmall(args, blockDim.x));
   // Holds block plus halo and filter data for blockDim.z depths.
   extern __shared__ __align__(8) unsigned char shared_memory[];
-  static_assert(sizeof(S) <= 8, "Insufficient alignement detected");
+  static_assert(sizeof(S) <= 8, "Insufficient alignment detected");
   S* const shared_data = reinterpret_cast<S*>(shared_memory);
 
   const int num_batches = args.batch;

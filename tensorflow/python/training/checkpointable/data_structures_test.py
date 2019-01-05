@@ -16,6 +16,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import copy
 import os
 
 import numpy
@@ -23,6 +24,7 @@ import six
 
 from tensorflow.python.eager import context
 from tensorflow.python.eager import test
+from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import test_util
 from tensorflow.python.keras.engine import training
 from tensorflow.python.keras.layers import core
@@ -31,6 +33,7 @@ from tensorflow.python.layers import core as non_keras_core
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import resource_variable_ops
+from tensorflow.python.ops import variables
 from tensorflow.python.training.checkpointable import data_structures
 from tensorflow.python.training.checkpointable import tracking
 from tensorflow.python.training.checkpointable import util
@@ -70,6 +73,7 @@ class HasList(training.Model):
 class ListTests(test.TestCase):
 
   @test_util.run_in_graph_and_eager_modes
+  @test_util.run_v1_only("b/120545219")
   def testTracking(self):
     model = HasList()
     output = model(array_ops.ones([32, 2]))
@@ -96,7 +100,13 @@ class ListTests(test.TestCase):
     model.load_weights(save_path)
     self.assertAllEqual([[1., 2., 3.], [4., 5., 6.]],
                         self.evaluate(model.variables[0]))
+    v = variables.Variable(1.)
+    model.var_list = [v]
+    self.assertIn(v, model.variables)
+    self.assertIn(v, model.trainable_variables)
+    self.assertNotIn(v, model.non_trainable_variables)
 
+  @test_util.run_v1_only("b/120545219")
   def testUpdatesForwarded(self):
     with context.graph_mode():
       model = HasList()
@@ -113,6 +123,7 @@ class ListTests(test.TestCase):
       self.assertEqual(0, len(model.updates))
 
   @test_util.run_in_graph_and_eager_modes
+  @test_util.run_v1_only("b/120545219")
   def testLossesForwarded(self):
     model = HasList()
     model_input = array_ops.ones([32, 2])
@@ -148,6 +159,23 @@ class ListTests(test.TestCase):
   def testNoPop(self):
     with self.assertRaises(AttributeError):
       data_structures.List().pop()
+
+  @test_util.run_in_graph_and_eager_modes
+  def testTensorConversion(self):
+
+    class ListToTensor(training.Model):
+
+      def __init__(self):
+        super(ListToTensor, self).__init__()
+        self.l = [1., 2., 3.]
+
+    self.assertAllEqual(
+        [1., 2., 3.],
+        self.evaluate(constant_op.constant(ListToTensor().l)))
+
+    self.assertAllEqual(
+        [1., 2., 3.],
+        self.evaluate(array_ops.pack(ListToTensor().l)))
 
   def testNesting(self):
     with context.graph_mode():
@@ -228,6 +256,13 @@ class ListTests(test.TestCase):
     l.append(1)
     self.assertEqual([1], l_wrapper)
 
+  def testLayerCollectionWithExternalMutation(self):
+    l = []
+    l_wrapper = data_structures._ListWrapper(l)
+    layer = core.Dense(1)
+    l.append(layer)
+    self.assertEqual([layer], l_wrapper.layers)
+
   def testHashing(self):
     has_sequences = set([data_structures.List(),
                          data_structures.List()])
@@ -263,6 +298,7 @@ class HasMapping(training.Model):
 class MappingTests(test.TestCase):
 
   @test_util.run_in_graph_and_eager_modes
+  @test_util.run_v1_only("b/120545219")
   def testTracking(self):
     model = HasMapping()
     output = model(array_ops.ones([32, 2]))
@@ -298,6 +334,20 @@ class MappingTests(test.TestCase):
     mapping = data_structures.Mapping()
     with self.assertRaises(TypeError):
       mapping[1] = data_structures.List()
+
+  def testLayerCollectionWithExternalMutation(self):
+    d = {}
+    root = tracking.Checkpointable()
+    root.wrapper = d
+    self.assertEqual([], root.wrapper.layers)
+    self.assertEqual([], root.wrapper.trainable_weights)
+    layer1 = core.Dense(1)
+    layer2 = core.Dense(1)
+    d["a"] = layer1
+    d["b"] = layer2
+    self.assertEqual([layer1, layer2], root.wrapper.layers)
+    # The layers have still not created variables
+    self.assertEqual([], root.wrapper.trainable_weights)
 
   def testHashing(self):
     has_mappings = set([data_structures.Mapping(),
@@ -417,6 +467,104 @@ class MappingTests(test.TestCase):
     # storage updated (no shadowing all its methods like _ListWrapper).
     new_dict.update(model.d)
     self.assertEqual({1: 3}, new_dict)
+
+  def testListShallowCopy(self):
+    root = tracking.Checkpointable()
+    orig_list = [[1.]]
+    root.a = orig_list
+    copied = copy.copy(root.a)
+    self.assertAllEqual([[1.]], copied)
+    self.assertIsNot(root.a, copied)
+    self.assertIs(root.a[0], copied[0])
+
+    # Dirtiness should be inherited
+    util.list_objects(root.a)
+    orig_list.append(1.)
+    with self.assertRaises(ValueError):
+      util.list_objects(root.a)
+    with self.assertRaises(ValueError):
+      util.list_objects(copy.copy(root.a))
+
+  def testListDeepCopy(self):
+    root = tracking.Checkpointable()
+    orig_list = [[1.]]
+    root.a = orig_list
+    copied = copy.deepcopy(root.a)
+    self.assertAllEqual([[1.]], copied)
+    self.assertIsNot(root.a, copied)
+    self.assertIsNot(root.a[0], copied[0])
+
+    # Dirtiness should be inherited
+    util.list_objects(root.a)
+    orig_list.append(1.)
+    with self.assertRaises(ValueError):
+      util.list_objects(root.a)
+    with self.assertRaises(ValueError):
+      util.list_objects(copy.deepcopy(root.a))
+
+  def testDictShallowCopy(self):
+    root = tracking.Checkpointable()
+    orig_dict = {"a": [1.]}
+    root.a = orig_dict
+    copied = copy.copy(root.a)
+    self.assertAllEqual([1.], copied["a"])
+    self.assertIsNot(root.a, copied)
+    self.assertIs(root.a["a"], copied["a"])
+
+    # Dirtiness should be inherited
+    util.list_objects(root.a)
+    orig_dict["b"] = []
+    with self.assertRaises(ValueError):
+      util.list_objects(root.a)
+    with self.assertRaises(ValueError):
+      util.list_objects(copy.copy(root.a))
+
+  def testDictDeepCopy(self):
+    root = tracking.Checkpointable()
+    orig_dict = {"a": [1.]}
+    root.a = orig_dict
+    copied = copy.deepcopy(root.a)
+    self.assertAllEqual([1.], copied["a"])
+    self.assertIsNot(root.a, copied)
+    self.assertIsNot(root.a["a"], copied["a"])
+
+    # Dirtiness should be inherited
+    util.list_objects(root.a)
+    orig_dict["b"] = []
+    with self.assertRaises(ValueError):
+      util.list_objects(root.a)
+    with self.assertRaises(ValueError):
+      util.list_objects(copy.deepcopy(root.a))
+
+  def testShallowCopyCheckpointable(self):
+    original = tracking.Checkpointable()
+    original_sub = tracking.Checkpointable()
+    original.a = [[1.]]
+    original.b = {"a": original_sub}
+    shallow_copied = copy.copy(original)
+    self.assertIs(original_sub, shallow_copied.b["a"])
+    self.assertIsNot(original, shallow_copied)
+    self.assertEqual([[1.]], shallow_copied.a)
+    shallow_deps = util.list_objects(shallow_copied)
+    self.assertIn(shallow_copied.a, shallow_deps)
+    self.assertIn(shallow_copied.b, shallow_deps)
+    self.assertIn(shallow_copied.b["a"], shallow_deps)
+
+  def testDeepCopyCheckpointable(self):
+    original = tracking.Checkpointable()
+    original_sub = tracking.Checkpointable()
+    original.a = [[1.]]
+    original.b = {"a": original_sub}
+    deep_copied = copy.deepcopy(original)
+    self.assertIsNot(original, deep_copied)
+    self.assertIsNot(original_sub, deep_copied.b["a"])
+    self.assertEqual([[1.]], deep_copied.a)
+    self.assertIsInstance(deep_copied.b["a"], tracking.Checkpointable)
+    deps = util.list_objects(deep_copied)
+    self.assertIn(deep_copied.a, deps)
+    self.assertIn(deep_copied.b, deps)
+    self.assertIn(deep_copied.b["a"], deps)
+    self.assertNotIn(original_sub, deps)
 
   def testConstructableFromSequence(self):
     result = data_structures._DictWrapper([(1, 2), (3, 4)])

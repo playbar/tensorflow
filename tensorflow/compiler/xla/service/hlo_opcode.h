@@ -47,6 +47,10 @@ namespace xla {
 #define HLO_OPCODE_LIST(V)                                   \
   V(kAbs, "abs")                                             \
   V(kAdd, "add")                                             \
+  V(kAddDependency, "add-dependency")                        \
+  V(kAfterAll, "after-all", kHloOpcodeIsVariadic)            \
+  V(kAllReduce, "all-reduce")                                \
+  V(kAllToAll, "all-to-all")                                 \
   V(kAtan2, "atan2")                                         \
   V(kBatchNormGrad, "batch-norm-grad")                       \
   V(kBatchNormInference, "batch-norm-inference")             \
@@ -57,6 +61,7 @@ namespace xla {
   V(kCall, "call", kHloOpcodeIsVariadic)                     \
   V(kCeil, "ceil")                                           \
   V(kClamp, "clamp")                                         \
+  V(kCollectivePermute, "collective-permute")                \
   V(kClz, "count-leading-zeros")                             \
   V(kComplex, "complex")                                     \
   V(kConcatenate, "concatenate", kHloOpcodeIsVariadic)       \
@@ -66,7 +71,6 @@ namespace xla {
   V(kConvolution, "convolution")                             \
   V(kCopy, "copy")                                           \
   V(kCos, "cosine")                                          \
-  V(kCrossReplicaSum, "cross-replica-sum")                   \
   V(kCustomCall, "custom-call")                              \
   V(kDivide, "divide")                                       \
   V(kDomain, "domain")                                       \
@@ -81,10 +85,9 @@ namespace xla {
   V(kFusion, "fusion", kHloOpcodeIsVariadic)                 \
   V(kGather, "gather")                                       \
   V(kGe, "greater-than-or-equal-to", kHloOpcodeIsComparison) \
-  V(kAfterAll, "after-all", kHloOpcodeIsVariadic)            \
+  V(kGetDimensionSize, "get-dimension-size")                 \
   V(kGetTupleElement, "get-tuple-element")                   \
   V(kGt, "greater-than", kHloOpcodeIsComparison)             \
-  V(kHostCompute, "host-compute")                            \
   V(kImag, "imag")                                           \
   V(kInfeed, "infeed")                                       \
   V(kIota, "iota")                                           \
@@ -118,6 +121,7 @@ namespace xla {
   V(kReverse, "reverse")                                     \
   V(kRng, "rng")                                             \
   V(kRoundNearestAfz, "round-nearest-afz")                   \
+  V(kScatter, "scatter")                                     \
   V(kSelect, "select")                                       \
   V(kSelectAndScatter, "select-and-scatter")                 \
   V(kSend, "send")                                           \
@@ -154,7 +158,7 @@ enum HloOpcodeProperty {
 // Returns a string representation of the opcode.
 string HloOpcodeString(HloOpcode opcode);
 
-// Returns a string representation of the opcode.
+// Retrieves the opcode enum by name if the opcode exists.
 StatusOr<HloOpcode> StringToHloOpcode(const string& opcode_name);
 
 inline std::ostream& operator<<(std::ostream& os, HloOpcode opcode) {

@@ -33,7 +33,7 @@ _override_helper = ops._override_helper
 # pylint: enable=protected-access
 
 
-@tf_export("SparseTensor")
+@tf_export("sparse.SparseTensor", "SparseTensor")
 class SparseTensor(_TensorLike):
   """Represents a sparse tensor.
 
@@ -112,19 +112,13 @@ class SparseTensor(_TensorLike):
       values: A 1-D tensor of any type and shape `[N]`.
       dense_shape: A 1-D int64 tensor of shape `[ndims]`.
 
-    Returns:
-      A `SparseTensor`.
     """
-    with ops.name_scope(None, "SparseTensor",
-                        [indices, values, dense_shape]):
+    with ops.name_scope(None, "SparseTensor", [indices, values, dense_shape]):
       indices = ops.convert_to_tensor(
           indices, name="indices", dtype=dtypes.int64)
-      # Always pass as_ref=True because we want to be able to update
-      # values later if it is a VariableOp.
       # TODO(touts): Consider adding mutable_values() when 'values'
       # is a VariableOp and updating users of SparseTensor.
-      values = ops.internal_convert_to_tensor(
-          values, name="values", as_ref=True)
+      values = ops.internal_convert_to_tensor(values, name="values")
       dense_shape = ops.convert_to_tensor(
           dense_shape, name="dense_shape", dtype=dtypes.int64)
     self._indices = indices
@@ -136,10 +130,10 @@ class SparseTensor(_TensorLike):
     dense_shape_shape = dense_shape.get_shape().with_rank(1)
 
     # Assert number of rows in indices match the number of elements in values.
-    indices_shape[0].merge_with(values_shape[0])
+    indices_shape.dims[0].merge_with(values_shape.dims[0])
     # Assert number of columns in indices matches the number of elements in
     # dense_shape.
-    indices_shape[1].merge_with(dense_shape_shape[0])
+    indices_shape.dims[1].merge_with(dense_shape_shape.dims[0])
 
   def get_shape(self):
     """Get the `TensorShape` representing the shape of the dense tensor.
@@ -184,9 +178,30 @@ class SparseTensor(_TensorLike):
     return self._dense_shape
 
   @property
+  def shape(self):
+    """Get the `TensorShape` representing the shape of the dense tensor.
+
+    Returns:
+      A `TensorShape` object.
+    """
+    return tensor_util.constant_value_as_shape(self._dense_shape)
+
+  @property
   def graph(self):
     """The `Graph` that contains the index, value, and dense_shape tensors."""
     return self._indices.graph
+
+  def consumers(self):
+    """Returns a list of `Operation`s that consume this `SparseTensor`.
+
+    Returns:
+      A list of `Operation`s.
+    """
+    values_consumers = set(self._values.consumers())
+    indices_consumers = set(self._indices.consumers())
+    dense_shape_consumers = set(self._dense_shape.consumers())
+    return list(values_consumers \
+                .union(indices_consumers, dense_shape_consumers))
 
   def __str__(self):
     return "SparseTensor(indices=%s, values=%s, dense_shape=%s)" % (
@@ -205,7 +220,7 @@ class SparseTensor(_TensorLike):
 
     Args:
       feed_dict: A dictionary that maps `Tensor` objects to feed values.
-        See @{tf.Session.run} for a
+        See `tf.Session.run` for a
         description of the valid feed values.
       session: (Optional.) The `Session` to be used to evaluate this sparse
         tensor. If none, the default session will be used.
@@ -225,11 +240,11 @@ class SparseTensor(_TensorLike):
 
 SparseTensorValue = collections.namedtuple(
     "SparseTensorValue", ["indices", "values", "dense_shape"])
-tf_export("SparseTensorValue")(SparseTensorValue)
-pywrap_tensorflow.RegisterSparseTensorValueClass(SparseTensorValue)
+tf_export(v1=["SparseTensorValue"])(SparseTensorValue)
+pywrap_tensorflow.RegisterType("SparseTensorValue", SparseTensorValue)
 
 
-@tf_export("convert_to_tensor_or_sparse_tensor")
+@tf_export(v1=["convert_to_tensor_or_sparse_tensor"])
 def convert_to_tensor_or_sparse_tensor(value, dtype=None, name=None):
   """Converts value to a `SparseTensor` or `Tensor`.
 

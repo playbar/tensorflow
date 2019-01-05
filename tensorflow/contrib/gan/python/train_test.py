@@ -114,6 +114,12 @@ def stargan_generator_model(inputs, _):
   return variable_scope.get_variable('dummy_g', initializer=0.5) * inputs
 
 
+class StarGANGenerator(object):
+
+  def __call__(self, inputs, _):
+    return stargan_generator_model(inputs, _)
+
+
 def stargan_discriminator_model(inputs, num_domains):
   """Differentiable dummy discriminator for StarGAN."""
 
@@ -128,6 +134,12 @@ def stargan_discriminator_model(inputs, num_domains):
       normalizer_fn=None,
       biases_initializer=None)
   return output_src, output_cls
+
+
+class StarGANDiscriminator(object):
+
+  def __call__(self, inputs, num_domains):
+    return stargan_discriminator_model(inputs, num_domains)
 
 
 def get_gan_model():
@@ -272,6 +284,49 @@ def create_callable_cyclegan_model():
       data_y=array_ops.ones([1, 2]))
 
 
+def get_stargan_model():
+  """Similar to get_gan_model()."""
+  # TODO(joelshor): Find a better way of creating a variable scope.
+  with variable_scope.variable_scope('generator') as gen_scope:
+    pass
+  with variable_scope.variable_scope('discriminator') as dis_scope:
+    pass
+  return namedtuples.StarGANModel(
+      input_data=array_ops.ones([1, 2, 2, 3]),
+      input_data_domain_label=array_ops.ones([1, 2]),
+      generated_data=array_ops.ones([1, 2, 2, 3]),
+      generated_data_domain_target=array_ops.ones([1, 2]),
+      reconstructed_data=array_ops.ones([1, 2, 2, 3]),
+      discriminator_input_data_source_predication=array_ops.ones([1]),
+      discriminator_generated_data_source_predication=array_ops.ones([1]),
+      discriminator_input_data_domain_predication=array_ops.ones([1, 2]),
+      discriminator_generated_data_domain_predication=array_ops.ones([1, 2]),
+      generator_variables=None,
+      generator_scope=gen_scope,
+      generator_fn=stargan_generator_model,
+      discriminator_variables=None,
+      discriminator_scope=dis_scope,
+      discriminator_fn=stargan_discriminator_model)
+
+
+def get_callable_stargan_model():
+  model = get_stargan_model()
+  return model._replace(
+      generator_fn=StarGANGenerator(), discriminator_fn=StarGANDiscriminator())
+
+
+def create_stargan_model():
+  return train.stargan_model(
+      stargan_generator_model, stargan_discriminator_model,
+      array_ops.ones([1, 2, 2, 3]), array_ops.ones([1, 2]))
+
+
+def create_callable_stargan_model():
+  return train.stargan_model(StarGANGenerator(), StarGANDiscriminator(),
+                             array_ops.ones([1, 2, 2, 3]),
+                             array_ops.ones([1, 2]))
+
+
 def get_sync_optimizer():
   return sync_replicas_optimizer.SyncReplicasOptimizer(
       gradient_descent.GradientDescentOptimizer(learning_rate=1.0),
@@ -292,6 +347,8 @@ class GANModelTest(test.TestCase, parameterized.TestCase):
       ('cyclegan', get_cyclegan_model, namedtuples.CycleGANModel),
       ('callable_cyclegan', get_callable_cyclegan_model,
        namedtuples.CycleGANModel),
+      ('stargan', get_stargan_model, namedtuples.StarGANModel),
+      ('callabel_stargan', get_callable_stargan_model, namedtuples.StarGANModel)
   )
   def test_output_type(self, create_fn, expected_tuple_type):
     """Test that output type is as expected."""
@@ -342,7 +399,7 @@ class StarGANModelTest(test.TestCase):
     target_tensor = train._generate_stargan_random_domain_target(
         batch_size, domain_numbers)
 
-    with self.test_session() as sess:
+    with self.cached_session() as sess:
       targets = sess.run(target_tensor)
       self.assertTupleEqual((batch_size, domain_numbers), targets.shape)
       for target in targets:
@@ -462,7 +519,7 @@ class GANLossTest(test.TestCase, parameterized.TestCase):
     """Test output type."""
     loss = train.gan_loss(get_gan_model_fn(), add_summaries=True)
     self.assertIsInstance(loss, namedtuples.GANLoss)
-    self.assertGreater(len(ops.get_collection(ops.GraphKeys.SUMMARIES)), 0)
+    self.assertNotEmpty(ops.get_collection(ops.GraphKeys.SUMMARIES))
 
   @parameterized.named_parameters(
       ('cyclegan', create_cyclegan_model),
@@ -471,7 +528,7 @@ class GANLossTest(test.TestCase, parameterized.TestCase):
   def test_cyclegan_output_type(self, get_gan_model_fn):
     loss = train.cyclegan_loss(get_gan_model_fn(), add_summaries=True)
     self.assertIsInstance(loss, namedtuples.CycleGANLoss)
-    self.assertGreater(len(ops.get_collection(ops.GraphKeys.SUMMARIES)), 0)
+    self.assertNotEmpty(ops.get_collection(ops.GraphKeys.SUMMARIES))
 
   @parameterized.named_parameters(
       ('gan', create_gan_model, False),
@@ -609,6 +666,27 @@ class GANLossTest(test.TestCase, parameterized.TestCase):
     self.assertTrue(np.isscalar(loss_y2x_dis_np))
 
   @parameterized.named_parameters(
+      ('notcallable', create_stargan_model),
+      ('callable', create_callable_stargan_model),
+  )
+  def test_stargan(self, create_gan_model_fn):
+
+    model = create_gan_model_fn()
+    model_loss = train.stargan_loss(model)
+
+    self.assertIsInstance(model_loss, namedtuples.GANLoss)
+
+    with self.cached_session() as sess:
+
+      sess.run(variables.global_variables_initializer())
+
+      gen_loss, disc_loss = sess.run(
+          [model_loss.generator_loss, model_loss.discriminator_loss])
+
+      self.assertTrue(np.isscalar(gen_loss))
+      self.assertTrue(np.isscalar(disc_loss))
+
+  @parameterized.named_parameters(
       ('gan', create_gan_model),
       ('callable_gan', create_callable_gan_model),
       ('infogan', create_infogan_model),
@@ -681,7 +759,7 @@ class TensorPoolAdjusteModelTest(test.TestCase):
           # For [pool_size, ?), the pool is full, tensor2 must be equal to some
           # historical values of tensor1 (which is previously stored in the
           # pool).
-          self.assertTrue(any([(v == t2).all() for v in history_values]))
+          self.assertTrue(any((v == t2).all() for v in history_values))
 
   def _make_new_model_and_check(self, model, pool_size):
     pool_fn = lambda x: random_tensor_pool.tensor_pool(x, pool_size=pool_size)
@@ -757,6 +835,9 @@ class GANTrainOpsTest(test.TestCase, parameterized.TestCase):
         colocate_gradients_with_ops=True)
 
     self.assertIsInstance(train_ops, namedtuples.GANTrainOps)
+
+    # Make sure there are no training hooks populated accidentally.
+    self.assertEmpty(train_ops.train_hooks)
 
   # TODO(joelshor): Add a test to check that custom update op is run.
   @parameterized.named_parameters(
@@ -845,8 +926,15 @@ class GANTrainOpsTest(test.TestCase, parameterized.TestCase):
         model, loss, generator_optimizer=g_opt, discriminator_optimizer=d_opt)
     self.assertIsInstance(train_ops, namedtuples.GANTrainOps)
     # No new trainable variables should have been added.
-    self.assertEqual(num_trainable_vars,
-                     len(variables_lib.get_trainable_variables()))
+    self.assertLen(variables_lib.get_trainable_variables(), num_trainable_vars)
+
+    # Sync hooks should be populated in the GANTrainOps.
+    self.assertLen(train_ops.train_hooks, 2)
+    for hook in train_ops.train_hooks:
+      self.assertIsInstance(
+          hook, sync_replicas_optimizer._SyncReplicasOptimizerHook)
+    sync_opts = [hook._sync_optimizer for hook in train_ops.train_hooks]
+    self.assertSetEqual(frozenset(sync_opts), frozenset((g_opt, d_opt)))
 
     g_sync_init_op = g_opt.get_init_tokens_op(num_tokens=1)
     d_sync_init_op = d_opt.get_init_tokens_op(num_tokens=1)
@@ -880,6 +968,32 @@ class GANTrainOpsTest(test.TestCase, parameterized.TestCase):
 
       coord.request_stop()
       coord.join(g_threads + d_threads)
+
+  @parameterized.named_parameters(
+      ('is_chief', True),
+      ('is_not_chief', False),
+  )
+  def test_is_chief_in_train_hooks(self, is_chief):
+    """Make sure is_chief is propagated correctly to sync hooks."""
+    model = create_gan_model()
+    loss = train.gan_loss(model)
+    g_opt = get_sync_optimizer()
+    d_opt = get_sync_optimizer()
+    train_ops = train.gan_train_ops(
+        model,
+        loss,
+        g_opt,
+        d_opt,
+        is_chief=is_chief,
+        summarize_gradients=True,
+        colocate_gradients_with_ops=True)
+
+    self.assertLen(train_ops.train_hooks, 2)
+    for hook in train_ops.train_hooks:
+      self.assertIsInstance(
+          hook, sync_replicas_optimizer._SyncReplicasOptimizerHook)
+    is_chief_list = [hook._is_chief for hook in train_ops.train_hooks]
+    self.assertListEqual(is_chief_list, [is_chief, is_chief])
 
 
 class GANTrainTest(test.TestCase, parameterized.TestCase):
@@ -957,6 +1071,44 @@ class GANTrainTest(test.TestCase, parameterized.TestCase):
         train_step_fn=train.get_sequential_train_steps(train_steps))
     self.assertTrue(np.isscalar(final_loss))
     self.assertEqual(17.0, final_loss)
+
+  @parameterized.named_parameters(
+      ('gan', create_gan_model),
+      ('callable_gan', create_callable_gan_model),
+      ('infogan', create_infogan_model),
+      ('callable_infogan', create_callable_infogan_model),
+      ('acgan', create_acgan_model),
+      ('callable_acgan', create_callable_acgan_model),
+  )
+  def test_train_hooks_exist_in_get_hooks_fn(self, create_gan_model_fn):
+    model = create_gan_model_fn()
+    loss = train.gan_loss(model)
+
+    g_opt = get_sync_optimizer()
+    d_opt = get_sync_optimizer()
+    train_ops = train.gan_train_ops(
+        model,
+        loss,
+        g_opt,
+        d_opt,
+        summarize_gradients=True,
+        colocate_gradients_with_ops=True)
+
+    sequential_train_hooks = train.get_sequential_train_hooks()(train_ops)
+    self.assertLen(sequential_train_hooks, 4)
+    sync_opts = [
+        hook._sync_optimizer for hook in sequential_train_hooks if
+        isinstance(hook, sync_replicas_optimizer._SyncReplicasOptimizerHook)]
+    self.assertLen(sync_opts, 2)
+    self.assertSetEqual(frozenset(sync_opts), frozenset((g_opt, d_opt)))
+
+    joint_train_hooks = train.get_joint_train_hooks()(train_ops)
+    self.assertLen(joint_train_hooks, 5)
+    sync_opts = [
+        hook._sync_optimizer for hook in joint_train_hooks if
+        isinstance(hook, sync_replicas_optimizer._SyncReplicasOptimizerHook)]
+    self.assertLen(sync_opts, 2)
+    self.assertSetEqual(frozenset(sync_opts), frozenset((g_opt, d_opt)))
 
 
 class PatchGANTest(test.TestCase, parameterized.TestCase):

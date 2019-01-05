@@ -59,6 +59,8 @@ CastOpBase::CastOpBase(OpKernelConstruction* ctx) : OpKernel(ctx) {
 
   OP_REQUIRES_OK(ctx, ctx->GetAttr("DstT", &external_dst_dtype_));
 
+  OP_REQUIRES_OK(ctx, ctx->GetAttr("Truncate", &use_truncation_));
+
   // Quantized data types use the same underlying format as their non quantized
   // version so we use the non quantized implementation for casting.
   if (external_dst_dtype_ == DT_QUINT8) {
@@ -96,11 +98,17 @@ void CastOpBase::Compute(OpKernelContext* ctx) {
     ctx->set_output(0, inp);
   } else {
     Tensor in;
-    in.UnsafeCopyFromInternal(inp, src_dtype_, inp.shape());
+    if (external_src_dtype_ != src_dtype_) {
+      // If the type is a quantized type we need to do an UnsafeCopyFromInternal
+      // since the src_dtype_ is different from external_src_type_.
+      in.UnsafeCopyFromInternal(inp, src_dtype_, inp.shape());
+    } else {
+      in = inp;
+    }
     Tensor* out = nullptr;
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, in.shape(), &out));
     out->set_dtype(dst_dtype_);
-    work_(ctx, in, out);
+    work_(ctx, in, out, use_truncation_);
     out->set_dtype(external_dst_dtype_);
   }
 }

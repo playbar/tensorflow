@@ -66,6 +66,7 @@ class LibHDFS {
   std::function<tSize(hdfsFS, hdfsFile, const void*, tSize)> hdfsWrite;
   std::function<int(hdfsFS, hdfsFile)> hdfsHFlush;
   std::function<int(hdfsFS, hdfsFile)> hdfsHSync;
+  std::function<tOffset(hdfsFS, hdfsFile)> hdfsTell;
   std::function<hdfsFile(hdfsFS, const char*, int, int, short, tSize)>
       hdfsOpenFile;
   std::function<int(hdfsFS, const char*)> hdfsExists;
@@ -92,6 +93,7 @@ class LibHDFS {
       BIND_HDFS_FUNC(hdfsPread);
       BIND_HDFS_FUNC(hdfsWrite);
       BIND_HDFS_FUNC(hdfsHFlush);
+      BIND_HDFS_FUNC(hdfsTell);
       BIND_HDFS_FUNC(hdfsHSync);
       BIND_HDFS_FUNC(hdfsOpenFile);
       BIND_HDFS_FUNC(hdfsExists);
@@ -144,7 +146,7 @@ Status HadoopFileSystem::Connect(StringPiece fname, hdfsFS* fs) {
 
   StringPiece scheme, namenode, path;
   io::ParseURI(fname, &scheme, &namenode, &path);
-  const string nn = namenode.ToString();
+  const string nn(namenode);
 
   hdfsBuilder* builder = hdfs_->hdfsNewBuilder();
   if (scheme == "file") {
@@ -183,7 +185,7 @@ Status HadoopFileSystem::Connect(StringPiece fname, hdfsFS* fs) {
 string HadoopFileSystem::TranslateName(const string& name) const {
   StringPiece scheme, namenode, path;
   io::ParseURI(name, &scheme, &namenode, &path);
-  return path.ToString();
+  return string(path);
 }
 
 class HDFSRandomAccessFile : public RandomAccessFile {
@@ -201,6 +203,11 @@ class HDFSRandomAccessFile : public RandomAccessFile {
       mutex_lock lock(mu_);
       hdfs_->hdfsCloseFile(fs_, file_);
     }
+  }
+
+  Status Name(StringPiece* result) const override {
+    *result = filename_;
+    return Status::OK();
   }
 
   Status Read(uint64 offset, size_t n, StringPiece* result,
@@ -282,7 +289,7 @@ class HDFSWritableFile : public WritableFile {
     }
   }
 
-  Status Append(const StringPiece& data) override {
+  Status Append(StringPiece data) override {
     if (hdfs_->hdfsWrite(fs_, file_, data.data(),
                          static_cast<tSize>(data.size())) == -1) {
       return IOError(filename_, errno);
@@ -308,8 +315,21 @@ class HDFSWritableFile : public WritableFile {
     return Status::OK();
   }
 
+  Status Name(StringPiece* result) const override {
+    *result = filename_;
+    return Status::OK();
+  }
+
   Status Sync() override {
     if (hdfs_->hdfsHSync(fs_, file_) != 0) {
+      return IOError(filename_, errno);
+    }
+    return Status::OK();
+  }
+
+  Status Tell(int64* position) override {
+    *position = hdfs_->hdfsTell(fs_, file_);
+    if (*position == -1) {
       return IOError(filename_, errno);
     }
     return Status::OK();
@@ -392,7 +412,7 @@ Status HadoopFileSystem::GetChildren(const string& dir,
     return IOError(dir, errno);
   }
   for (int i = 0; i < entries; i++) {
-    result->push_back(io::Basename(info[i].mName).ToString());
+    result->push_back(string(io::Basename(info[i].mName)));
   }
   hdfs_->hdfsFreeFileInfo(info, entries);
   return Status::OK();

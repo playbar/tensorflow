@@ -18,19 +18,18 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from tensorflow.python.keras import activations
 from tensorflow.python.keras import backend as K
 from tensorflow.python.keras import constraints
 from tensorflow.python.keras import initializers
 from tensorflow.python.keras import regularizers
-from tensorflow.python.keras.engine.base_layer import InputSpec
 from tensorflow.python.keras.engine.base_layer import Layer
+from tensorflow.python.keras.engine.input_spec import InputSpec
 from tensorflow.python.keras.utils import tf_utils
 from tensorflow.python.ops import math_ops
-from tensorflow.python.util.tf_export import tf_export
+from tensorflow.python.util.tf_export import keras_export
 
 
-@tf_export('keras.layers.LeakyReLU')
+@keras_export('keras.layers.LeakyReLU')
 class LeakyReLU(Layer):
   """Leaky version of a Rectified Linear Unit.
 
@@ -69,7 +68,7 @@ class LeakyReLU(Layer):
     return input_shape
 
 
-@tf_export('keras.layers.PReLU')
+@keras_export('keras.layers.PReLU')
 class PReLU(Layer):
   """Parametric Rectified Linear Unit.
 
@@ -167,7 +166,7 @@ class PReLU(Layer):
     return input_shape
 
 
-@tf_export('keras.layers.ELU')
+@keras_export('keras.layers.ELU')
 class ELU(Layer):
   """Exponential Linear Unit.
 
@@ -206,7 +205,7 @@ class ELU(Layer):
     return input_shape
 
 
-@tf_export('keras.layers.ThresholdedReLU')
+@keras_export('keras.layers.ThresholdedReLU')
 class ThresholdedReLU(Layer):
   """Thresholded Rectified Linear Unit.
 
@@ -246,7 +245,7 @@ class ThresholdedReLU(Layer):
     return input_shape
 
 
-@tf_export('keras.layers.Softmax')
+@keras_export('keras.layers.Softmax')
 class Softmax(Layer):
   """Softmax activation function.
 
@@ -268,7 +267,7 @@ class Softmax(Layer):
     self.axis = axis
 
   def call(self, inputs):
-    return activations.softmax(inputs, axis=self.axis)
+    return K.softmax(inputs, axis=self.axis)
 
   def get_config(self):
     config = {'axis': self.axis}
@@ -280,7 +279,7 @@ class Softmax(Layer):
     return input_shape
 
 
-@tf_export('keras.layers.ReLU')
+@keras_export('keras.layers.ReLU')
 class ReLU(Layer):
   """Rectified Linear Unit activation function.
 
@@ -315,18 +314,19 @@ class ReLU(Layer):
                        'cannot be negative value: ' + str(negative_slope))
 
     self.support_masking = True
-    self.max_value = K.cast_to_floatx(max_value)
+    if max_value is not None:
+      max_value = K.cast_to_floatx(max_value)
+    self.max_value = max_value
     self.negative_slope = K.cast_to_floatx(negative_slope)
     self.threshold = K.cast_to_floatx(threshold)
 
   def call(self, inputs):
     # alpha is used for leaky relu slope in activations instead of
     # negative_slope.
-    return activations.relu(
-        inputs,
-        alpha=self.negative_slope,
-        max_value=self.max_value,
-        threshold=self.threshold)
+    return K.relu(inputs,
+                  alpha=self.negative_slope,
+                  max_value=self.max_value,
+                  threshold=self.threshold)
 
   def get_config(self):
     config = {

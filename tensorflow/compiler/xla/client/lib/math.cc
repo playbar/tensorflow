@@ -69,8 +69,7 @@ std::array<float, 6> kErfUCoefficient = {
 
 // Evaluate the polynomial given coefficients and `x`.
 // N.B. Coefficients should be supplied in decreasing order.
-XlaOp EvaluatePolynomial(XlaOp x,
-                         tensorflow::gtl::ArraySlice<float> coefficients) {
+XlaOp EvaluatePolynomial(XlaOp x, absl::Span<const float> coefficients) {
   XlaOp poly = ScalarLike(x, 0.0);
   for (float c : coefficients) {
     poly = poly * x + ScalarLike(x, c);
@@ -207,7 +206,11 @@ XlaOp Lgamma(XlaOp input) {
 
   XlaOp log_y = log_sqrt_two_pi + (z + one_half) * log_t - t + Log(x);
 
-  XlaOp reflection = log_pi - Log(Sin(pi * input)) - log_y;
+  // If z = a + 0j, the analytic continuation of log reduces to taking the
+  // absolute value of the real part.
+  // Re(log(z)) = Re(log|z| + arg(z)j)
+  //            = log|a|
+  XlaOp reflection = log_pi - Log(Abs(Sin(pi * input))) - log_y;
   XlaOp result = Select(need_to_reflect, reflection, log_y);
   return result;
 }
@@ -262,6 +265,21 @@ XlaOp Digamma(XlaOp input) {
   return result;
 }
 
+// Implements Banker's rounding: numbers that are equidistant between two
+// integers are rounded towards even.
+XlaOp RoundToEven(XlaOp x) {
+  auto half = ScalarLike(x, 0.5);
+  auto one = ScalarLike(x, 1.0);
+  auto two = ScalarLike(x, 2.0);
+
+  auto round_val = Floor(x);
+  auto fraction = x - round_val;
+  auto nearest_even_int = round_val - two * Floor(half * x);
+  auto is_odd = Eq(nearest_even_int, one);
+  return Select(Or(Gt(fraction, half), And(Eq(fraction, half), is_odd)),
+                round_val + one, round_val);
+}
+
 // Trigonometric functions.
 
 // acos(x) = 2 * atan(sqrt(1 - x^2) / (1 + x))
@@ -300,5 +318,14 @@ XlaOp Atanh(XlaOp x) {
 XlaOp Cosh(XlaOp x) { return (Exp(x) + Exp(-x)) * ScalarLike(x, 0.5); }
 
 XlaOp Sinh(XlaOp x) { return (Exp(x) - Exp(-x)) * ScalarLike(x, 0.5); }
+
+XlaOp MaybeConjugate(XlaOp x, bool conjugate) {
+  XlaBuilder* builder = x.builder();
+  return builder->ReportErrorOrReturn([&]() -> StatusOr<XlaOp> {
+    TF_ASSIGN_OR_RETURN(Shape shape, builder->GetShape(x));
+    auto perform_conj = shape.element_type() == C64 && conjugate;
+    return perform_conj ? Conj(x) : x;
+  });
+}
 
 }  // namespace xla

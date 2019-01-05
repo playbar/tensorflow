@@ -35,7 +35,7 @@ limitations under the License.
 
 namespace tensorflow {
 namespace tensorrt {
-class TRTInt8Calibrator;
+struct TRTInt8Calibrator;
 class TRTCalibrationResource;
 class AsyncHelper;
 //  TODO(Sami): Remove this file?
@@ -59,6 +59,12 @@ class TRTEngineOp : public AsyncOpKernel {
 
   // Execute replaced native segment as function Op.
   void ExecuteNativeSegment(OpKernelContext* ctx, AsyncHelper* helper);
+
+  // Execute the tensorrt engine. Returns whether we need to retry by running
+  // the native segment.
+  bool ExecuteTrtEngine(OpKernelContext* ctx, const int num_batch,
+                        nvinfer1::ICudaEngine* trt_engine_ptr,
+                        nvinfer1::IExecutionContext* trt_execution_context_ptr);
 
   // Allocate necessary resources for calibration
   Status AllocateCalibrationResources(OpKernelContext* ctx,
@@ -124,6 +130,10 @@ class TRTEngineOp : public AsyncOpKernel {
 
   // The finalized calibrator for inference.
   std::unique_ptr<TRTInt8Calibrator> calibrator_;
+
+  // If true, create calibration graph for INT8 mode. Otherwise, we are using
+  // user-provided quantization ranges.
+  bool use_calibration_;
 };
 
 }  // namespace tensorrt

@@ -68,12 +68,9 @@ class EagerServiceImplTest : public ::testing::Test {
     worker_env_.rendezvous_mgr = &rendezvous_mgr_;
     worker_env_.session_mgr = session_mgr_.get();
 
-    Device* device = DeviceFactory::NewDevice(
-        "CPU", {}, "/job:localhost/replica:0/task:0/device:CPU:0");
-
-    worker_env_.local_devices = {device};
-
-    device_mgr_.reset(new DeviceMgr(worker_env_.local_devices));
+    device_mgr_ = absl::make_unique<DeviceMgr>(DeviceFactory::NewDevice(
+        "CPU", {}, "/job:localhost/replica:0/task:0/device:CPU:0"));
+    worker_env_.local_devices = device_mgr_->ListDevices();
     worker_env_.device_mgr = device_mgr_.get();
   }
 
@@ -345,8 +342,7 @@ TEST_F(EagerServiceImplTest, SendTensorTest) {
       response.context_id(), RemoteTensorHandleInternal(2, 0), &tensor_handle));
   TF_ASSERT_OK(tensor_handle->Tensor(&t));
 
-  Device* device = nullptr;
-  TF_ASSERT_OK(tensor_handle->Device(&device));
+  Device* device = tensor_handle->device();
   EXPECT_NE(device, nullptr);
   EXPECT_EQ(device->name(), "/job:localhost/replica:0/task:0/device:CPU:0");
 
@@ -363,6 +359,47 @@ TEST_F(EagerServiceImplTest, SendTensorTest) {
   CloseContextResponse close_context_response;
   TF_ASSERT_OK(eager_service_impl.CloseContext(&close_context_request,
                                                &close_context_response));
+}
+
+TEST_F(EagerServiceImplTest, KeepAliveTest) {
+  TestEagerServiceImpl eager_service_impl(&worker_env_);
+
+  CreateContextRequest request;
+  request.mutable_server_def()->set_job_name("localhost");
+  request.mutable_server_def()->set_task_index(0);
+  request.set_rendezvous_id(random::New64());
+  request.set_keep_alive_secs(3);
+  CreateContextResponse response;
+
+  TF_ASSERT_OK(eager_service_impl.CreateContext(&request, &response));
+
+  worker_env_.env->SleepForMicroseconds(5 *
+                                        tensorflow::EnvTime::kSecondsToMicros);
+
+  KeepAliveRequest keep_alive_request;
+  KeepAliveResponse keep_alive_response;
+
+  keep_alive_request.set_context_id(response.context_id());
+
+  Status status =
+      eager_service_impl.KeepAlive(&keep_alive_request, &keep_alive_response);
+
+  EXPECT_EQ(status.code(), error::INVALID_ARGUMENT);
+  EXPECT_PRED_FORMAT2(::testing::IsSubstring, "Unable to find a context_id",
+                      status.error_message());
+
+  // Create a new context.
+  request.set_rendezvous_id(random::New64());
+  TF_ASSERT_OK(eager_service_impl.CreateContext(&request, &response));
+
+  // The context should not be GC'd.
+  worker_env_.env->SleepForMicroseconds(1 *
+                                        tensorflow::EnvTime::kSecondsToMicros);
+
+  keep_alive_request.set_context_id(response.context_id());
+
+  TF_ASSERT_OK(
+      eager_service_impl.KeepAlive(&keep_alive_request, &keep_alive_response));
 }
 
 }  // namespace

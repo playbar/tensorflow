@@ -35,6 +35,7 @@ struct SessionOptions;
 // as a key into a state dictionary if it wants to keep state across
 // calls.
 struct GraphOptimizationPassOptions {
+  // Filled in by DirectSession for PRE_PLACEMENT optimizations. Can be empty.
   string session_handle;
   const SessionOptions* session_options = nullptr;
   const CostModel* cost_model = nullptr;
@@ -132,11 +133,12 @@ class OptimizationPassRegistration {
 #define REGISTER_OPTIMIZATION_UNIQ_HELPER(ctr, grouping, phase, optimization) \
   REGISTER_OPTIMIZATION_UNIQ(ctr, grouping, phase, optimization)
 
-#define REGISTER_OPTIMIZATION_UNIQ(ctr, grouping, phase, optimization) \
-  static optimization_registration::OptimizationPassRegistration       \
-      register_optimization_##ctr(                                     \
-          grouping, phase,                                             \
-          std::unique_ptr<GraphOptimizationPass>(new optimization()),  \
+#define REGISTER_OPTIMIZATION_UNIQ(ctr, grouping, phase, optimization)         \
+  static ::tensorflow::optimization_registration::OptimizationPassRegistration \
+      register_optimization_##ctr(                                             \
+          grouping, phase,                                                     \
+          ::std::unique_ptr<::tensorflow::GraphOptimizationPass>(              \
+              new optimization()),                                             \
           #optimization)
 
 }  // namespace tensorflow

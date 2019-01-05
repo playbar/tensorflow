@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <numeric>
 
+#include "absl/container/flat_hash_map.h"
 #include "tensorflow/compiler/xla/map_util.h"
 #include "tensorflow/compiler/xla/service/cpu/dot_op_emitter.h"
 #include "tensorflow/compiler/xla/service/cpu/ir_emission_utils.h"
@@ -34,19 +35,18 @@ namespace cpu {
 // instruction stream.
 
 namespace {
-using ::tensorflow::gtl::nullopt;
-using ::tensorflow::gtl::optional;
+using absl::nullopt;
+using absl::optional;
 
 using ShouldMakeOperandColMajorCache =
-    tensorflow::gtl::FlatMap<const HloInstruction*, bool>;
+    absl::flat_hash_map<const HloInstruction*, bool>;
 }  // namespace
 
 static bool ShouldMakeAllUsersColMajor(const HloInstruction* instruction) {
   for (auto* user : instruction->users()) {
     optional<int64> operand_idx = ProfitableToMakeDotOperandColumnMajor(*user);
     if (!operand_idx || user->operand(*operand_idx) != instruction ||
-        std::count(user->operands().begin(), user->operands().end(),
-                   instruction) != 1) {
+        absl::c_count(user->operands(), instruction) != 1) {
       return false;
     }
   }
@@ -159,7 +159,7 @@ Status CpuLayoutAssignment::AddBackendConstraints(
           continue;
         }
         // Skip operands with non-array shapes.
-        if (!ShapeUtil::IsArray(instruction->operand(operand_no)->shape())) {
+        if (!instruction->operand(operand_no)->shape().IsArray()) {
           continue;
         }
         Shape operand_shape(
@@ -174,7 +174,7 @@ Status CpuLayoutAssignment::AddBackendConstraints(
       }
       // Skip instructions which don't produce array shapes (tuples, opaque,
       // etc.).
-      if (!ShapeUtil::IsArray(instruction->shape())) {
+      if (!instruction->shape().IsArray()) {
         continue;
       }
     }

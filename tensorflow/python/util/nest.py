@@ -19,6 +19,9 @@ This module can perform operations on nested structures. A nested structure is a
 Python sequence, tuple (including `namedtuple`), or dict that can contain
 further sequences, tuples, and dicts.
 
+attr.s decorated classes (http://www.attrs.org) are also supported, in the
+same way as `namedtuple`.
+
 The utilities here assume (and do not check) that the nested structures form a
 'tree', i.e., no references in the structure of the input of these functions
 should be recursive.
@@ -36,6 +39,12 @@ import collections as _collections
 import six as _six
 
 from tensorflow.python import pywrap_tensorflow as _pywrap_tensorflow
+
+
+def _get_attrs_values(obj):
+  """Returns the list of values from an attrs instance."""
+  attrs = getattr(obj.__class__, "__attrs_attrs__")
+  return [getattr(obj, a.name) for a in attrs]
 
 
 def _sorted(dict_):
@@ -62,6 +71,11 @@ def _is_namedtuple(instance, strict=False):
   return _pywrap_tensorflow.IsNamedtuple(instance, strict)
 
 
+# See the swig file (util.i) for documentation.
+_is_mapping = _pywrap_tensorflow.IsMapping
+_is_attrs = _pywrap_tensorflow.IsAttrs
+
+
 def _sequence_like(instance, args):
   """Converts the sequence `args` to the same type as `instance`.
 
@@ -73,7 +87,7 @@ def _sequence_like(instance, args):
   Returns:
     `args` with the type of `instance`.
   """
-  if isinstance(instance, (dict, _collections.Mapping)):
+  if _is_mapping(instance):
     # Pack dictionaries in a deterministic order by sorting the keys.
     # Notice this means that we ignore the original order of `OrderedDict`
     # instances. This is intentional, to avoid potential bugs caused by mixing
@@ -81,7 +95,7 @@ def _sequence_like(instance, args):
     # corresponding `OrderedDict` to pack it back).
     result = dict(zip(_sorted(instance), args))
     return type(instance)((key, result[key]) for key in _six.iterkeys(instance))
-  elif _is_namedtuple(instance):
+  elif _is_namedtuple(instance) or _is_attrs(instance):
     return type(instance)(*args)
   else:
     # Not a namedtuple
@@ -89,7 +103,8 @@ def _sequence_like(instance, args):
 
 
 def _yield_value(iterable):
-  if isinstance(iterable, (dict, _collections.Mapping)):
+  """Yields the next value from the given iterable."""
+  if _is_mapping(iterable):
     # Iterate through dictionaries in a deterministic order by sorting the
     # keys. Notice this means that we ignore the original order of `OrderedDict`
     # instances. This is intentional, to avoid potential bugs caused by mixing
@@ -97,58 +112,36 @@ def _yield_value(iterable):
     # corresponding `OrderedDict` to pack it back).
     for key in _sorted(iterable):
       yield iterable[key]
+  elif _is_attrs(iterable):
+    for value in _get_attrs_values(iterable):
+      yield value
   else:
     for value in iterable:
       yield value
 
 
-def is_sequence(seq):
-  """Returns a true if its input is a collections.Sequence (except strings).
-
-  Args:
-    seq: an input sequence.
-
-  Returns:
-    True if the sequence is a not a string and is a collections.Sequence or a
-    dict.
-  """
-  return _pywrap_tensorflow.IsSequence(seq)
+# See the swig file (util.i) for documentation.
+is_sequence = _pywrap_tensorflow.IsSequence
 
 
-def flatten(nest):
-  """Returns a flat list from a given nested structure.
-
-  If `nest` is not a sequence, tuple, or dict, then returns a single-element
-  list: `[nest]`.
-
-  In the case of dict instances, the sequence consists of the values, sorted by
-  key to ensure deterministic behavior. This is true also for `OrderedDict`
-  instances: their sequence order is ignored, the sorting order of keys is
-  used instead. The same convention is followed in `pack_sequence_as`. This
-  correctly repacks dicts and `OrderedDict`s after they have been flattened,
-  and also allows flattening an `OrderedDict` and then repacking it back using
-  a corresponding plain dict, or vice-versa.
-  Dictionaries with non-sortable keys cannot be flattened.
-
-  Users must not modify any collections used in `nest` while this function is
-  running.
-
-  Args:
-    nest: an arbitrarily nested structure or a scalar object. Note, numpy
-        arrays are considered scalars.
-
-  Returns:
-    A Python list, the flattened version of the input.
-
-  Raises:
-    TypeError: The nest is or contains a dict with non-sortable keys.
-  """
-  return _pywrap_tensorflow.Flatten(nest)
+# See the swig file (util.i) for documentation.
+flatten = _pywrap_tensorflow.Flatten
 
 
-def _same_namedtuples(nest1, nest2):
-  """Returns True if the two namedtuples have the same name and fields."""
-  return _pywrap_tensorflow.SameNamedtuples(nest1, nest2)
+# See the swig file (util.i) for documentation.
+_same_namedtuples = _pywrap_tensorflow.SameNamedtuples
+
+
+class _DotString(object):
+
+  def __str__(self):
+    return "."
+
+  def __repr__(self):
+    return "."
+
+
+_DOT = _DotString()
 
 
 def assert_same_structure(nest1, nest2, check_types=True):
@@ -182,7 +175,15 @@ def assert_same_structure(nest1, nest2, check_types=True):
     TypeError: If the two structures differ in the type of sequence in any of
       their substructures. Only possible if `check_types` is `True`.
   """
-  _pywrap_tensorflow.AssertSameStructure(nest1, nest2, check_types)
+  try:
+    _pywrap_tensorflow.AssertSameStructure(nest1, nest2, check_types)
+  except (ValueError, TypeError) as e:
+    str1 = str(map_structure(lambda _: _DOT, nest1))
+    str2 = str(map_structure(lambda _: _DOT, nest2))
+    raise type(e)("%s\n"
+                  "Entire first structure:\n%s\n"
+                  "Entire second structure:\n%s"
+                  % (str(e), str1, str2))
 
 
 def flatten_dict_items(dictionary):
@@ -311,14 +312,17 @@ def pack_sequence_as(structure, flat_sequence):
                        % len(flat_sequence))
     return flat_sequence[0]
 
-  flat_structure = flatten(structure)
-  if len(flat_structure) != len(flat_sequence):
-    raise ValueError(
-        "Could not pack sequence. Structure had %d elements, but flat_sequence "
-        "had %d elements.  Structure: %s, flat_sequence: %s."
-        % (len(flat_structure), len(flat_sequence), structure, flat_sequence))
-
-  _, packed = _packed_nest_with_indices(structure, flat_sequence, 0)
+  try:
+    final_index, packed = _packed_nest_with_indices(structure, flat_sequence, 0)
+    if final_index < len(flat_sequence):
+      raise IndexError
+  except IndexError:
+    flat_structure = flatten(structure)
+    if len(flat_structure) != len(flat_sequence):
+      raise ValueError(
+          "Could not pack sequence. Structure had %d elements, but "
+          "flat_sequence had %d elements.  Structure: %s, flat_sequence: %s." %
+          (len(flat_structure), len(flat_sequence), structure, flat_sequence))
   return _sequence_like(structure, packed)
 
 
@@ -375,6 +379,112 @@ def map_structure(func, *structure, **check_types_dict):
 
   return pack_sequence_as(
       structure[0], [func(*x) for x in entries])
+
+
+def map_structure_with_paths(func, *structure, **kwargs):
+  """Applies `func` to each entry in `structure` and returns a new structure.
+
+  Applies `func(path, x[0], x[1], ..., **kwargs)` where x[i] is an entry in
+  `structure[i]` and `path` is the common path to x[i] in the structures.  All
+  structures in `structure` must have the same arity, and the return value will
+  contain the results in the same structure. Special kwarg `check_types`
+  determines whether the types of iterables within the structure must be the
+  same-- see **kwargs definition below.
+
+  Args:
+    func: A callable with the signature func(path, *values, **kwargs) that is
+      evaluated on the leaves of the structure.
+    *structure: A variable number of compatible structures to process.
+    **kwargs: Optional kwargs to be passed through to func. Special kwarg
+      `check_types` is not passed to func, but instead determines whether the
+      types of iterables within the structures have to be same (e.g.,
+      `map_structure(func, [1], (1,))` raises a `TypeError` exception). By
+      default, the types must match. To allow iteration over structures of
+      different types (but common arity), set this kwarg to `False`.
+
+  Returns:
+    A structure of the same form as the input structures whose leaves are the
+    result of evaluating func on corresponding leaves of the input structures.
+
+  Raises:
+    TypeError: If `func` is not callable or if the structures do not match
+      each other by depth tree.
+    TypeError: If `check_types` is not `False` and the two structures differ in
+      the type of sequence in any of their substructures.
+    ValueError: If no structures are provided.
+  """
+  return _map_structure_with_tuple_or_string_paths(
+      use_string_paths=True, func=func, structure=structure, kwargs=kwargs)
+
+
+def map_structure_with_tuple_paths(func, *structure, **kwargs):
+  """Applies `func` to each entry in `structure` and returns a new structure.
+
+  Applies `func(tuple_path, x[0], x[1], ..., **kwargs)` where `x[i]` is an entry
+  in `structure[i]` and `tuple_path` is a tuple of indices and/or dictionary
+  keys (as returned by `nest.yield_flat_paths`), which uniquely specifies the
+  common path to x[i] in the structures. All structures in `structure` must have
+  the same arity, and the return value will contain the results in the same
+  structure. Special kwarg `check_types` determines whether the types of
+  iterables within the structure must be the same-- see **kwargs definition
+  below.
+
+  Args:
+    func: A callable with the signature `func(tuple_path, *values, **kwargs)`
+      that is evaluated on the leaves of the structure.
+    *structure: A variable number of compatible structures to process.
+    **kwargs: Optional kwargs to be passed through to func. Special kwarg
+      `check_types` is not passed to func, but instead determines whether the
+      types of iterables within the structures have to be same (e.g.
+      `map_structure(func, [1], (1,))` raises a `TypeError` exception). To allow
+      this set this argument to `False`.
+
+  Returns:
+    A structure of the same form as the input structures whose leaves are the
+    result of evaluating func on corresponding leaves of the input structures.
+
+  Raises:
+    TypeError: If `func` is not callable or if the structures do not match
+      each other by depth tree.
+    TypeError: If `check_types` is not `False` and the two structures differ in
+      the type of sequence in any of their substructures.
+    ValueError: If no structures are provided.
+  """
+  return _map_structure_with_tuple_or_string_paths(
+      use_string_paths=False, func=func, structure=structure, kwargs=kwargs)
+
+
+def _map_structure_with_tuple_or_string_paths(
+    use_string_paths, func, structure, kwargs):
+  """Implements `map_structure` with either tuple or string paths."""
+
+  if not callable(func):
+    raise TypeError("func must be callable, got: %s" % func)
+  if not structure:
+    raise ValueError("Must provide at least one structure")
+
+  check_types = kwargs.pop("check_types", True)
+  for other in structure[1:]:
+    assert_same_structure(structure[0], other, check_types=check_types)
+
+  if use_string_paths:
+    flatten_func = flatten_with_joined_string_paths
+  else:
+    flatten_func = flatten_with_tuple_paths
+
+  # First set paths_and_values to:
+  # [[(p11, v11), ... (p1n, v1n)], ... [(pm1, vm1), ... (pmn, vmn)]]
+  paths_and_values = [flatten_func(s) for s in structure]
+
+  # Now zip(*paths_and_values) would be:
+  # [((p11, v11), ... (pm1, vm1)), ... ((p1n, v1n), ... (pmn, vmn))]
+  # so grouped_by_path is set to:
+  # [[(p11, ... pm1), (v11, ... vm1)], ... [(p1n, ... pmn), (v1n, ... vmn)]]
+  # Note that p1i, ... pmi must all be equal since the structures are the same.
+  grouped_by_path = [zip(*p_v) for p_v in zip(*paths_and_values)]
+
+  return pack_sequence_as(structure[0], [
+      func(paths[0], *values, **kwargs) for paths, values in grouped_by_path])
 
 
 def _yield_flat_up_to(shallow_tree, input_tree):
@@ -443,7 +553,8 @@ def assert_shallow_structure(shallow_tree, input_tree, check_types=True):
               "The two namedtuples don't have the same sequence type. Input "
               "structure has type %s, while shallow structure has type %s."
               % (type(input_tree), type(shallow_tree)))
-      else:
+      elif not (isinstance(shallow_tree, _collections.Mapping)
+                and isinstance(input_tree, _collections.Mapping)):
         raise TypeError(
             "The two structures don't have the same sequence type. Input "
             "structure has type %s, while shallow structure has type %s."
@@ -759,5 +870,24 @@ def flatten_with_joined_string_paths(structure, separator="/"):
   return list(zip(flat_string_paths, flatten(structure)))
 
 
-_pywrap_tensorflow.RegisterSequenceClass(_collections.Sequence)
-_pywrap_tensorflow.RegisterMappingClass(_collections.Mapping)
+def flatten_with_tuple_paths(structure):
+  """Returns a list of `(tuple_path, leaf_element)` tuples.
+
+  The order of pairs produced matches that of `nest.flatten`. This allows you
+  to flatten a nested structure while keeping information about where in the
+  structure each data element was located. See `nest.yield_flat_paths`
+  for more information about tuple paths.
+
+  Args:
+    structure: the nested structure to flatten.
+
+  Returns:
+    A list of `(tuple_path, leaf_element)` tuples. Each `tuple_path` is a tuple
+    of indices and/or dictionary keys that uniquely specify the path to
+    `leaf_element` within `structure`.
+  """
+  return list(zip(yield_flat_paths(structure), flatten(structure)))
+
+
+_pywrap_tensorflow.RegisterType("Mapping", _collections.Mapping)
+_pywrap_tensorflow.RegisterType("Sequence", _collections.Sequence)
