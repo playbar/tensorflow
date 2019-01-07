@@ -39,3 +39,4 @@ xcuserdata/**
 *.iml
 local.properties
 gradleBuild
+tensorflow/contrib/cmake/cmake-build-debug
