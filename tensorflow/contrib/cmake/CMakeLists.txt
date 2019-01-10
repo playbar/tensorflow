@@ -7,10 +7,15 @@ project(tensorflow C CXX)
 # Set C++14 as standard for the whole project
 set(CMAKE_CXX_STANDARD 14)
 
-# Actual source is the ../../.. directory
+# Actual source is the ../../.. directory  PATH ABSOLUTE
 get_filename_component(tf_contrib_source_dir ${tensorflow_SOURCE_DIR} PATH)
 get_filename_component(tf_tf_source_dir ${tf_contrib_source_dir} PATH)
 get_filename_component(tensorflow_source_dir ${tf_tf_source_dir} PATH)
+
+message(STATUS ${tensorflow_SOURCE_DIR})
+message(STATUS ${tf_contrib_source_dir})
+message(STATUS ${tf_tf_source_dir})
+message(STATUS ${tensorflow_source_dir})
 
 # [CLEANUP] Not sure if this is needed (copied from Protobuf)
 # CMake policies
